@@ -1,14 +1,16 @@
 services:
   modelping:
-    build: .
+    # 默认用 GitHub Actions 构建并推到 GHCR 的镜像（push 到 main 自动出新 latest）。
+    # 首次推送后到 GitHub 仓库 Packages 把该镜像设为 Public，Watchtower 才能免登录拉取。
+    # 想在盒子上本地构建，把下面一行换成 `build: .`。
+    image: ghcr.io/deng-wei/modelping:latest
     ports:
       - "8787:8787"
     environment:
-      # —— 访问控制 ——
-      # 可选：访问口令，设置后前端需输入口令才能调用 /api。
-      # APP_PASSWORD: "change-me"
-      # 可选：目标主机白名单（逗号分隔），防开放代理/SSRF。缺省不限制。
-      # ALLOWED_HOSTS: "api.openai.com,api.anthropic.com,generativelanguage.googleapis.com"
+      # —— 访问控制（公网暴露务必设置）——
+      # 访问口令：真实口令写在同目录 .env（不入库），仓库不含明文。未设置则启动报错。
+      APP_PASSWORD: "${APP_PASSWORD:?请在 .env 设置 APP_PASSWORD}"
+      # 注：不用 ALLOWED_HOSTS 白名单（自定义 host 居多）。防 SSRF/内网访问改在网络层做，见下方注释。
       # 可选：CORS 允许来源（逗号分隔，* 表示全开）。缺省同源（不下发 ACAO，跨站 JS 调不动 /api）。
       # CORS_ORIGIN: "https://your-frontend.example"
 
@@ -23,6 +25,29 @@ services:
       # 持久化 presets：宿主命名卷 → 容器 /data（SETTINGS_FILE 指向此处）。
       - presets-data:/data
     restart: unless-stopped
+    labels:
+      # 仅让 Watchtower 监控带此标签的容器。
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      # 固定子网，便于防火墙按源地址精确拦截（见 deploy/firewall-egress.sh）。
+      - egress
+
+  # 自动更新：定期检查 GHCR 新镜像，拉取并重启 modelping，清理旧镜像。
+  watchtower:
+    image: containrrr/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --label-enable --cleanup --interval 300   # 每 5 分钟检查一次
+    restart: unless-stopped
+
+networks:
+  # modelping 专用网络，固定子网 172.31.66.0/24。
+  # 防火墙据此拦截「该子网 → 内网私有段」的流量，只放行公网（见 deploy/firewall-egress.sh）。
+  egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.66.0/24
 
 volumes:
   presets-data:

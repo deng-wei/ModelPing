@@ -5,6 +5,8 @@ src/**/*.js
 .wrangler/
 .vercel/
 .dev.vars
+# 真实环境变量（含 APP_PASSWORD），仅保留 .env.example
+.env
 *.log
 .DS_Store
 # 本地工具/私人配置，不进开源仓库
