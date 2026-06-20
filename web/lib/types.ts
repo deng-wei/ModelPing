@@ -58,6 +58,7 @@ export interface Defaults {
   timeoutMs: number;
   maxRetries: number;
   maxTokens: number;
+  userAgent: string;
 }
 
 export interface PresetsResponse {
@@ -88,6 +89,7 @@ export interface HistoryEntry {
   baseUrl: string;
   isFullUrl?: boolean;
   apiKey: string;        // 仅存于浏览器；展示时掩码，可复制
+  userAgent?: string;    // 可选 User-Agent；空值不设置。
   model: string;
   modelLabel: string;
   streamVerdict: StreamVerdict; // 流式探测结论（stream/single/none/null）

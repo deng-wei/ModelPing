@@ -1,4 +1,5 @@
 import type { Balance, LookupRequest } from "./types.js";
+import { withUserAgent } from "./user-agent.js";
 
 // 余额/额度查询。各家端点 + 解析硬编码于下方注册表（参考 farion1231/cc-switch balance.rs）。
 // 加新供应商只需往 BALANCE_PROVIDERS 追加一项。全程经后端代理，apiKey 不存储/打印。
@@ -95,13 +96,13 @@ function providerFor(baseUrl: string): BalanceProvider | null {
   return BALANCE_PROVIDERS.find((p) => p.match(host)) ?? null;
 }
 
-async function fetchWithTimeout(url: string, apiKey: string): Promise<Response> {
+async function fetchWithTimeout(url: string, apiKey: string, userAgent?: string): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
     return await fetch(url, {
       method: "GET",
-      headers: { authorization: `Bearer ${apiKey}` },
+      headers: withUserAgent({ authorization: `Bearer ${apiKey}` }, userAgent),
       signal: ctrl.signal,
     });
   } catch (e: any) {
@@ -120,7 +121,7 @@ export async function fetchBalance(req: LookupRequest): Promise<Balance> {
   const provider = providerFor(req.baseUrl);
   if (!provider) return UNSUPPORTED;
 
-  const res = await fetchWithTimeout(provider.url, req.apiKey);
+  const res = await fetchWithTimeout(provider.url, req.apiKey, req.userAgent);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status}: ${body.slice(0, 500)}`);

@@ -1,6 +1,7 @@
 import type { TestRequest, TestResult, Usage, StreamEvent } from "./types.js";
 import { getAdapter, type Adapter, type StreamChunk } from "./adapters/index.js";
 import { EMPTY_USAGE } from "./adapters/base.js";
+import { withUserAgent } from "./user-agent.js";
 
 // 单次输出文本展示上限，避免超长响应撑爆历史记录/前端。
 const MAX_TEXT = 4000;
@@ -150,7 +151,7 @@ async function readErrorBody(res: Response): Promise<string> {
 async function runOnce(adapter: Adapter, req: TestRequest, attempt: number): Promise<TestResult> {
   const url = adapter.buildUrl(req);
   const requestUrl = sanitizeUrl(url, req);
-  const headers = adapter.buildHeaders(req);
+  const headers = withUserAgent(adapter.buildHeaders(req), req.userAgent);
   const body = JSON.stringify(adapter.buildBody(req));
   const start = Date.now();
 
@@ -189,7 +190,7 @@ async function runOnce(adapter: Adapter, req: TestRequest, attempt: number): Pro
 async function* runStreamOnce(adapter: Adapter, req: TestRequest, attempt: number): AsyncGenerator<StreamEvent> {
   const url = adapter.buildUrl(req);
   const requestUrl = sanitizeUrl(url, req);
-  const headers = { ...adapter.buildHeaders(req), accept: "text/event-stream" };
+  const headers = withUserAgent({ ...adapter.buildHeaders(req), accept: "text/event-stream" }, req.userAgent);
   const body = JSON.stringify(adapter.buildBody(req));
   const start = Date.now();
   let ttftMs: number | null = null;

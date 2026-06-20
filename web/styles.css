@@ -94,6 +94,7 @@ input, select, textarea {
 }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
 input.mono, textarea.mono { font-family: var(--mono); }
+input.invalid, textarea.invalid { border-color: var(--red); }
 
 .app {
   max-width: 1180px;
@@ -149,6 +150,8 @@ header.top .spacer { flex: 1; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field label { font-size: 11px; color: var(--text-dim); }
 .field.grow { flex: 1; min-width: 200px; }
+.hint { color: var(--text-dim); font-size: 11px; }
+.hint.fail { color: var(--red); }
 
 .key-wrap { display: flex; gap: 6px; align-items: center; }
 .key-wrap input { flex: 1; }

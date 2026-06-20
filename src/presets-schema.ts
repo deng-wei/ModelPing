@@ -12,6 +12,7 @@ export const FALLBACK_DEFAULTS: Defaults = {
   timeoutMs: 30000,
   maxRetries: 1,
   maxTokens: 512,
+  userAgent: "",
 };
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -54,6 +55,7 @@ export function normalizePresets(raw: unknown): PresetsResponse {
     timeoutMs: numberDefault(defaultsRaw.timeoutMs, FALLBACK_DEFAULTS.timeoutMs),
     maxRetries: numberDefault(defaultsRaw.maxRetries, FALLBACK_DEFAULTS.maxRetries),
     maxTokens: numberDefault(defaultsRaw.maxTokens, FALLBACK_DEFAULTS.maxTokens),
+    userAgent: cleanString(defaultsRaw.userAgent),
   };
 
   if (!Array.isArray(obj.providers)) throw new Error("providers 必须是数组");

@@ -7,6 +7,7 @@ import { normalizePresets, FALLBACK_DEFAULTS } from "./presets-schema.js";
 import type { SettingsStore } from "./store/index.js";
 import { fetchModels, modelsTargetUrls } from "./models-fetch.js";
 import { fetchBalance, balanceTargetUrl } from "./balance.js";
+import { normalizeUserAgent } from "./user-agent.js";
 
 // 框架无关的 Hono app。node.ts / worker.ts 共用。
 // 环境变量（两处入口都通过 env 注入）：
@@ -59,6 +60,7 @@ function normalize(raw: any): { req?: TestRequest; error?: string } {
     timeoutMs: toInt(raw.timeoutMs, FALLBACK_DEFAULTS.timeoutMs, 1000, 600000),
     maxRetries: toInt(raw.maxRetries, FALLBACK_DEFAULTS.maxRetries, 0, 10),
     maxTokens: toInt(raw.maxTokens, FALLBACK_DEFAULTS.maxTokens, 1, 200000),
+    userAgent: normalizeUserAgent(raw.userAgent) ?? "",
   };
   return { req };
 }
@@ -92,7 +94,7 @@ function normalizeLookup(raw: any): { req?: LookupRequest; error?: string } {
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return { error: "baseUrl 协议须为 http/https" };
   }
-  return { req: { baseUrl, isFullUrl: Boolean(raw.isFullUrl), apiKey } };
+  return { req: { baseUrl, isFullUrl: Boolean(raw.isFullUrl), apiKey, userAgent: normalizeUserAgent(raw.userAgent) } };
 }
 
 export function createApp() {

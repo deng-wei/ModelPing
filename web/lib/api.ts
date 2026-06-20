@@ -27,6 +27,7 @@ export interface TestPayload {
   timeoutMs: number;
   maxRetries: number;
   maxTokens: number;
+  userAgent?: string;
 }
 
 export async function fetchHealth(): Promise<{ ok: boolean; needPassword: boolean }> {
@@ -76,6 +77,7 @@ export interface LookupPayload {
   baseUrl: string;
   isFullUrl?: boolean;
   apiKey: string;
+  userAgent?: string;
 }
 
 // 拉取供应商模型列表（经后端代理）。

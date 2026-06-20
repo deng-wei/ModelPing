@@ -1,5 +1,6 @@
 import type { LookupRequest, ModelsResult } from "./types.js";
 import { trimSlash, isOriginOnlyUrl } from "./adapters/base.js";
+import { withUserAgent } from "./user-agent.js";
 
 // 拉取供应商模型列表。按 baseUrl host/形态选择候选端点与认证方式。
 // 全程经后端代理（避开浏览器 CORS），apiKey 仅用于本次转发，不存储/打印。
@@ -70,7 +71,7 @@ function planFor(req: LookupRequest): Plan {
     const r = endsWithVersionSegment(root) ? root : `${root}/v1beta`;
     return {
       urls: [`${r}/models`],
-      headers: { "x-goog-api-key": req.apiKey },
+      headers: withUserAgent({ "x-goog-api-key": req.apiKey }, req.userAgent),
       parse: parseGeminiModels,
     };
   }
@@ -79,7 +80,7 @@ function planFor(req: LookupRequest): Plan {
     const r = endsWithVersionSegment(root) ? root : `${root}/v1`;
     return {
       urls: [`${r}/models`],
-      headers: { "x-api-key": req.apiKey, "anthropic-version": ANTHROPIC_VERSION },
+      headers: withUserAgent({ "x-api-key": req.apiKey, "anthropic-version": ANTHROPIC_VERSION }, req.userAgent),
       parse: parseOpenAiModels,
     };
   }
@@ -90,7 +91,7 @@ function planFor(req: LookupRequest): Plan {
     : [`${root}/v1/models`, `${root}/models`];
   return {
     urls,
-    headers: { authorization: `Bearer ${req.apiKey}` },
+    headers: withUserAgent({ authorization: `Bearer ${req.apiKey}` }, req.userAgent),
     parse: parseOpenAiModels,
   };
 }

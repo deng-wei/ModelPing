@@ -80,6 +80,7 @@ export interface ConfigState {
   timeoutMs: number;
   maxRetries: number;
   maxTokens: number;
+  userAgent: string;
 }
 
 export function loadConfig(): Partial<ConfigState> | null {

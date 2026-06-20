@@ -68,7 +68,7 @@ export function App() {
   const [presetDefaults, setPresetDefaults] = useState<Defaults>(FALLBACK_DEFAULTS);
   const [activeTab, setActiveTab] = useState<"test" | "settings">("test");
   const [conn, setConn] = useState<ConnValue>({ providerId: CUSTOM_PROVIDER_ID, baseUrl: "", isFullUrl: false, apiKey: "" });
-  const [config, setConfig] = useState<ConfigState>({ input: "", timeoutMs: 30000, maxRetries: 1, maxTokens: 512 });
+  const [config, setConfig] = useState<ConfigState>({ input: "", timeoutMs: 30000, maxRetries: 1, maxTokens: 512, userAgent: "" });
   const [rows, setRows] = useState<ModelRow[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [persist, setPersistState] = useState<boolean>(getPersist());
@@ -139,6 +139,7 @@ export function App() {
         timeoutMs: savedCfg?.timeoutMs ?? defs.timeoutMs,
         maxRetries: savedCfg?.maxRetries ?? defs.maxRetries,
         maxTokens: savedCfg?.maxTokens ?? defs.maxTokens,
+        userAgent: savedCfg?.userAgent ?? defs.userAgent ?? "",
       };
       setConfig(cfg);
 
@@ -191,6 +192,7 @@ export function App() {
           timeoutMs: v.timeoutMs,
           maxRetries: v.maxRetries,
           maxTokens: v.maxTokens,
+          userAgent: v.userAgent,
         };
         setPresetDefaults(nextDefaults);
         const presets = { providers, defaults: nextDefaults };
@@ -302,6 +304,7 @@ export function App() {
         timeoutMs: cfg.timeoutMs,
         maxRetries: cfg.maxRetries,
         maxTokens: cfg.maxTokens,
+        userAgent: cfg.userAgent,
       };
 
       // 非流式与流式独立并行探测：流式不再依赖非流式先通过，
@@ -342,6 +345,7 @@ export function App() {
         baseUrl: c.baseUrl,
         isFullUrl: Boolean(c.isFullUrl),
         apiKey: c.apiKey,
+        userAgent: cfg.userAgent,
         model,
         modelLabel: row.label,
         streamVerdict,
@@ -498,7 +502,7 @@ export function App() {
 
       {activeTab === "test" ? (
         <>
-          <ConnectionPanel providers={providers} value={conn} onChange={onConnChange} onAddModels={onAddModels} onToast={showToast} />
+          <ConnectionPanel providers={providers} value={conn} userAgent={config.userAgent} onChange={onConnChange} onAddModels={onAddModels} onToast={showToast} />
           <ModelTable
             rows={rows}
             busy={busy}

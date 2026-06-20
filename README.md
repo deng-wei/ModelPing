@@ -19,6 +19,7 @@ Features:
 - Auto-detects non-streaming and streaming (SSE) availability
 - **Balance lookup**: identifies the provider by baseUrl host and queries remaining credit/quota in one click (DeepSeek, SiliconFlow, OpenRouter, StepFun, Novita, …)
 - **Model list fetch**: pulls available models from the provider's `/models` endpoint; search, multi-select in a modal, and batch-add to the test table
+- Optional custom User-Agent presets for coding-plan upstreams that gate access by client UA; applies consistently to model tests, stream checks, model listing, and balance lookup
 - Reports total latency, time-to-first-token (TTFT, streaming), and input/output/total tokens
 - Per-row status lights in the model table: gray (pending) → blue (testing) → green (pass) / red (fail)
 - Batch testing (concurrency 3), custom models, adjustable timeout/retries/maxTokens/input text
@@ -58,6 +59,7 @@ A set of default models and curated providers is bundled, maintained with refere
 | Timeout          | 60000 ms                                          |
 | Max retries      | 1 (exponential backoff; only network/timeout/429/5xx) |
 | Max output tokens| 1024                                             |
+| User-Agent       | Empty (do not override runtime default)          |
 
 ## Deployment
 

@@ -16,6 +16,7 @@ export interface ConnValue {
 interface Props {
   providers: ProviderPreset[];
   value: ConnValue;
+  userAgent?: string;
   onChange: (v: ConnValue) => void;
   onAddModels: (ids: string[]) => void;
   onToast: (msg: string) => void;
@@ -36,7 +37,7 @@ function fmtBalance(b: Balance, lang: Lang): string {
 
 // 连接面板：点选供应商自动填 baseUrl；或选「自定义」自填。
 // key 掩码显示，可切换明文，带复制按钮；并支持查询余额 / 拉取模型列表。
-export function ConnectionPanel({ providers, value, onChange, onAddModels, onToast }: Props) {
+export function ConnectionPanel({ providers, value, userAgent, onChange, onAddModels, onToast }: Props) {
   const { t, lang } = useI18n();
   const [showKey, setShowKey] = useState(false);
   const [balanceBusy, setBalanceBusy] = useState(false);
@@ -51,7 +52,7 @@ export function ConnectionPanel({ providers, value, onChange, onAddModels, onToa
     setBalanceBusy(true);
     setBalanceText(t("conn.querying"));
     try {
-      const b = await fetchBalance({ baseUrl: value.baseUrl, isFullUrl: value.isFullUrl, apiKey: value.apiKey });
+      const b = await fetchBalance({ baseUrl: value.baseUrl, isFullUrl: value.isFullUrl, apiKey: value.apiKey, userAgent });
       setBalanceText(fmtBalance(b, lang));
     } catch (e: any) {
       setBalanceText(t("conn.queryFailed", { msg: e?.message ?? e }));
@@ -64,7 +65,7 @@ export function ConnectionPanel({ providers, value, onChange, onAddModels, onToa
     if (!canLookup || modelsBusy) return;
     setModelsBusy(true);
     try {
-      const { models } = await fetchModels({ baseUrl: value.baseUrl, isFullUrl: value.isFullUrl, apiKey: value.apiKey });
+      const { models } = await fetchModels({ baseUrl: value.baseUrl, isFullUrl: value.isFullUrl, apiKey: value.apiKey, userAgent });
       if (!models.length) {
         onToast(t("conn.noModelsFetched"));
         return;
@@ -115,7 +116,7 @@ export function ConnectionPanel({ providers, value, onChange, onAddModels, onToa
 
       <div class="row" style="margin-top:12px">
         <div class="field grow">
-          <label>Base URL</label>
+          <label>{t("conn.baseUrl")}</label>
           <div class="key-wrap">
             <input
               class="mono"

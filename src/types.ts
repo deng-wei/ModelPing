@@ -13,6 +13,7 @@ export interface TestRequest {
   timeoutMs: number;   // 单次请求超时（含每次重试各自计时）
   maxRetries: number;  // 失败重试次数（指数退避，仅网络/超时/5xx）
   maxTokens: number;   // 输出 token 上限
+  userAgent: string;   // 可选 User-Agent；空串表示不覆盖运行时默认 UA。
 }
 
 // token 消耗。各协议字段名不同，统一归一为这三个。
@@ -68,6 +69,7 @@ export interface Defaults {
   timeoutMs: number;
   maxRetries: number;
   maxTokens: number;
+  userAgent: string;
 }
 
 export interface PresetsResponse {
@@ -81,6 +83,7 @@ export interface LookupRequest {
   baseUrl: string;
   isFullUrl?: boolean;
   apiKey: string;
+  userAgent?: string; // 可选 User-Agent；用于模型列表/余额等辅助请求。
 }
 
 // 统一余额结构。各家字段不同，归一为这几个；不支持的 host 返回 supported:false。
