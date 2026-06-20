@@ -2,6 +2,7 @@ import type { TestRequest, TestResult, Usage, StreamEvent } from "./types.js";
 import { getAdapter, type Adapter, type StreamChunk } from "./adapters/index.js";
 import { EMPTY_USAGE } from "./adapters/base.js";
 import { withUserAgent } from "./user-agent.js";
+import { drainSseBlocks, extractSseData } from "./sse.js";
 
 // 单次输出文本展示上限，避免超长响应撑爆历史记录/前端。
 const MAX_TEXT = 4000;
@@ -10,7 +11,7 @@ const MAX_FAILURE_LOG = 6000;
 
 // 合并 usage：以「最新出现的非空字段」覆盖。流式中 input 早出现、output 后出现，
 // 各家末包给的可能是累计值也可能是增量值，这里统一取「见过的最大有效值」更稳。
-function mergeUsage(acc: Usage, next: Partial<Usage> | undefined): Usage {
+export function mergeUsage(acc: Usage, next: Partial<Usage> | undefined): Usage {
   if (!next) return acc;
   const pick = (a: number | null, b: number | null | undefined) => {
     if (b == null) return a;
@@ -34,16 +35,16 @@ function truncateForLog(s: string, max = MAX_FAILURE_LOG): string {
   return s.length > max ? s.slice(0, max) + `\n...(日志已截断, 共${s.length}字符)` : s;
 }
 
-function redactSecrets(text: string, req: TestRequest): string {
+export function redactSecrets(text: string, req: TestRequest): string {
   let out = text;
   if (req.apiKey) out = out.split(req.apiKey).join("[REDACTED_API_KEY]");
-  out = out.replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;"}]+/gi, "$1[REDACTED]");
-  out = out.replace(/((?:api[_-]?key|x-goog-api-key|x-api-key|access[_-]?token|token)\s*[:=]\s*)[^\s,;"}]+/gi, "$1[REDACTED]");
+  out = out.replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;"}&]+/gi, "$1[REDACTED]");
+  out = out.replace(/((?:api[_-]?key|x-goog-api-key|x-api-key|access[_-]?token|token)\s*[:=]\s*)[^\s,;"}&]+/gi, "$1[REDACTED]");
   out = out.replace(/((?:api[_-]?key|key|token|access_token)=)[^&\s]+/gi, "$1[REDACTED]");
   return out;
 }
 
-function sanitizeUrl(raw: string, req: TestRequest): string {
+export function sanitizeUrl(raw: string, req: TestRequest): string {
   try {
     const url = new URL(raw);
     for (const key of [...url.searchParams.keys()]) {
@@ -55,7 +56,7 @@ function sanitizeUrl(raw: string, req: TestRequest): string {
   }
 }
 
-function isUnsupportedProtocol(status: number, bodyOrError = ""): boolean {
+export function isUnsupportedProtocol(status: number, bodyOrError = ""): boolean {
   if (status === 404 || status === 405 || status === 501) return true;
   if (status !== 400 && status !== 422) return false;
 
@@ -113,7 +114,7 @@ function failureFields(
 }
 
 // 判断是否值得重试：网络层错误(status 0)、超时、5xx、429。
-function retryable(status: number): boolean {
+export function retryable(status: number): boolean {
   return status === 0 || status === 408 || status === 429 || (status >= 500 && status < 600);
 }
 
@@ -258,13 +259,8 @@ async function* runStreamOnce(adapter: Adapter, req: TestRequest, attempt: numbe
   // 处理一个完整 SSE 事件块（多行）。聚合所有 data: 行，跳过 [DONE]。
   const handleEventBlock = (block: string): StreamEvent[] => {
     const events: StreamEvent[] = [];
-    const dataLines = block
-      .split(/\r?\n/)
-      .filter((l) => l.startsWith("data:"))
-      .map((l) => l.slice(5).trim());
-    if (!dataLines.length) return events;
-    const data = dataLines.join("\n");
-    if (data === "[DONE]") return events;
+    const data = extractSseData(block);
+    if (data === null || data === "[DONE]") return events;
 
     let payload: any;
     try {
@@ -300,10 +296,9 @@ async function* runStreamOnce(adapter: Adapter, req: TestRequest, attempt: numbe
       disarmTimer();
       buf += decoder.decode(value, { stream: true });
       // SSE 事件以空行分隔
-      let idx: number;
-      while ((idx = buf.search(/\r?\n\r?\n/)) !== -1) {
-        const block = buf.slice(0, idx);
-        buf = buf.slice(idx + (buf[idx] === "\r" ? 4 : 2));
+      const { blocks, rest } = drainSseBlocks(buf);
+      buf = rest;
+      for (const block of blocks) {
         for (const ev of handleEventBlock(block)) yield ev;
       }
     }

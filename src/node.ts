@@ -14,6 +14,7 @@ const env: Env = {
   APP_PASSWORD: process.env.APP_PASSWORD,
   ALLOWED_HOSTS: process.env.ALLOWED_HOSTS,
   CORS_ORIGIN: process.env.CORS_ORIGIN,
+  BLOCK_PRIVATE_HOSTS: process.env.BLOCK_PRIVATE_HOSTS,
   store: store ?? undefined,
 };
 

@@ -1,5 +1,6 @@
 import type { Balance, ModelsResult, PresetsResponse, StreamEvent, TestResult, Usage } from "./types.js";
 import { normalizePresets } from "./presets.js";
+import { drainSseBlocks, extractSseData } from "../../src/sse.js";
 
 // 空用量（探测失败/无结果时的占位）。前后端共享同一形状。
 export const EMPTY_USAGE: Usage = { inputTokens: null, outputTokens: null, totalTokens: null };
@@ -32,6 +33,9 @@ export interface TestPayload {
 
 export async function fetchHealth(): Promise<{ ok: boolean; needPassword: boolean }> {
   const res = await fetch("/api/health");
+  // 非 2xx（如反代 5xx / 返回 HTML 错误页）直接 res.json() 会抛解析错，
+  // 这里显式判 ok 并回退，避免初始化整体崩在一个无信息的 SyntaxError。
+  if (!res.ok) throw new Error(`健康检查失败: HTTP ${res.status}`);
   return res.json();
 }
 
@@ -173,10 +177,8 @@ export async function runTestStream(
   let finalResult: TestResult | null = null;
 
   const handleBlock = (block: string) => {
-    const line = block.split(/\r?\n/).find((l) => l.startsWith("data:"));
-    if (!line) return;
-    const data = line.slice(5).trim();
-    if (!data || data === "[DONE]") return;
+    const data = extractSseData(block);
+    if (data === null || data === "[DONE]") return;
     let ev: StreamEvent;
     try {
       ev = JSON.parse(data);
@@ -191,12 +193,9 @@ export async function runTestStream(
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.search(/\r?\n\r?\n/)) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + (buf[idx] === "\r" ? 4 : 2));
-      handleBlock(block);
-    }
+    const { blocks, rest } = drainSseBlocks(buf);
+    buf = rest;
+    for (const block of blocks) handleBlock(block);
   }
   if (buf.trim()) handleBlock(buf);
 

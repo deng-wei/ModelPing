@@ -8,6 +8,7 @@ import type { SettingsStore } from "./store/index.js";
 import { fetchModels, modelsTargetUrls } from "./models-fetch.js";
 import { fetchBalance, balanceTargetUrl } from "./balance.js";
 import { normalizeUserAgent } from "./user-agent.js";
+import { isPrivateUrl } from "./ssrf.js";
 
 // 框架无关的 Hono app。node.ts / worker.ts 共用。
 // 环境变量（两处入口都通过 env 注入）：
@@ -18,8 +19,17 @@ export interface Env {
   APP_PASSWORD?: string;
   ALLOWED_HOSTS?: string;
   CORS_ORIGIN?: string;
+  // 设为 "1"/"true" 时，拒绝目标解析到私有/环回/链路本地/云元数据地址（应用层 SSRF 兜底）。
+  // 默认关闭：本工具的合法用途包含测试本地/内网端点（如 Ollama），不默认拦截。
+  BLOCK_PRIVATE_HOSTS?: string;
   // 设置持久化存储（presets）。由各入口按部署平台注入；未注入时走前端纯本地模式。
   store?: SettingsStore;
+}
+
+// BLOCK_PRIVATE_HOSTS 是否开启。
+function blockPrivate(env?: Env): boolean {
+  const v = (env?.BLOCK_PRIVATE_HOSTS ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
 }
 
 // 把前端传入的部分字段补齐为完整 TestRequest，并做基本校验。
@@ -177,6 +187,9 @@ export function createApp() {
     if (!hostAllowed(req.baseUrl, c.env?.ALLOWED_HOSTS)) {
       return c.json({ error: "目标主机不在允许列表内" }, 403);
     }
+    if (blockPrivate(c.env) && isPrivateUrl(req.baseUrl)) {
+      return c.json({ error: "目标主机为私有/本地地址，已被禁止" }, 403);
+    }
 
     if (req.stream) {
       const stream = runTestStream(req);
@@ -209,6 +222,9 @@ export function createApp() {
       if (!hostAllowed(target, c.env?.ALLOWED_HOSTS)) {
         return c.json({ error: "目标主机不在允许列表内" }, 403);
       }
+      if (blockPrivate(c.env) && isPrivateUrl(target)) {
+        return c.json({ error: "目标主机为私有/本地地址，已被禁止" }, 403);
+      }
     }
     try {
       return c.json(await fetchModels(req));
@@ -231,6 +247,9 @@ export function createApp() {
     const target = balanceTargetUrl(req.baseUrl);
     if (target && !hostAllowed(target, c.env?.ALLOWED_HOSTS)) {
       return c.json({ error: "目标主机不在允许列表内" }, 403);
+    }
+    if (target && blockPrivate(c.env) && isPrivateUrl(target)) {
+      return c.json({ error: "目标主机为私有/本地地址，已被禁止" }, 403);
     }
     try {
       return c.json(await fetchBalance(req));

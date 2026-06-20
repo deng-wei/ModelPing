@@ -1,5 +1,6 @@
 // Keep the runtime behavior intentionally tolerant: invalid User-Agent values
 // show a non-blocking hint in the UI and are ignored by the backend.
+import { hasControlChars } from "../../src/user-agent.js";
 
 export const USER_AGENT_PRESETS = [
   { labelKey: "config.userAgentPresetDefault", value: "" },
@@ -13,6 +14,6 @@ export const USER_AGENT_PRESETS = [
 export function isValidUserAgentHeader(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return true;
-  // eslint-disable-next-line no-control-regex
-  return !/[\x00-\x08\x0a-\x1f\x7f]/.test(trimmed);
+  // 控制字符正则与后端单一来源（src/user-agent.ts），避免前后端校验漂移。
+  return !hasControlChars(trimmed);
 }

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { Defaults, HistoryEntry, PresetsResponse, ProviderPreset, Protocol, StreamVerdict, TestResult } from "../lib/types.js";
-import { EMPTY_USAGE, fetchHealth, fetchPresets, fetchSettings, saveSettings, runTestJson, runTestStream, setAppPassword, type TestPayload } from "../lib/api.js";
+import type { Defaults, HistoryEntry, PresetsResponse, ProviderPreset } from "../lib/types.js";
+import { fetchHealth, fetchPresets, fetchSettings, saveSettings, setAppPassword } from "../lib/api.js";
 import {
-  appendHistory, getPersist, loadConfig, loadConn, loadHistory,
+  getPersist, loadConfig, loadConn, loadHistory,
   saveConfig, saveConn, setPersist as persistSetPersist, clearHistory,
   type ConfigState, type ConnState,
 } from "../lib/storage.js";
@@ -14,14 +14,13 @@ import {
 import { initTheme } from "../lib/theme.js";
 import { ConnectionPanel, type ConnValue } from "./ConnectionPanel.js";
 import { ConfigPanel } from "./ConfigPanel.js";
-import { ModelTable, PROTOCOLS, protocolsForModel, freshProbes, type ModelRow, type ProtocolProbe } from "./ModelTable.js";
+import { ModelTable, freshProbes, type ModelRow } from "./ModelTable.js";
 import { HistoryPanel } from "./HistoryPanel.js";
 import { ThemeToggle } from "./ThemeToggle.js";
 import { LangToggle } from "./LangToggle.js";
 import { SettingsPanel } from "./SettingsPanel.js";
 import { initLang, useI18n } from "../lib/i18n.js";
-
-const CONCURRENCY = 3; // 批量检测的模型级并发上限（每个模型内部再并发 4 协议）
+import { useDetect } from "./useDetect.js";
 
 let rowSeq = 0;
 const nextKey = () => `r${++rowSeq}`;
@@ -72,7 +71,6 @@ export function App() {
   const [rows, setRows] = useState<ModelRow[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [persist, setPersistState] = useState<boolean>(getPersist());
-  const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
@@ -99,6 +97,11 @@ export function App() {
     setToast(msg);
     setTimeout(() => setToast(null), 1800);
   };
+
+  // 模型检测引擎（单行 4 协议探测 + 并发池）已抽到 useDetect；busy 由其持有。
+  const { busy, runBatch } = useDetect({
+    connRef, configRef, providers, setRows, historyRef, setHistory, showToast,
+  });
 
   // 应用主题（system 模式跟随系统切换）与语言（<html lang> + 标题）。
   useEffect(() => {
@@ -159,8 +162,8 @@ export function App() {
   };
 
   useEffect(() => {
+    // 仅在挂载时初始化一次（init 引用每渲染都变，故有意省略依赖）。
     init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 提交口令后重试初始化。
@@ -252,133 +255,6 @@ export function App() {
   const onClearHistory = () => {
     clearHistory();
     setHistory([]);
-  };
-
-  // 更新单个协议探针（按 行 key + 协议）。
-  const patchProbe = (rowKey: string, protocol: Protocol, patch: Partial<ProtocolProbe>) => {
-    setRows((rs) => rs.map((r) =>
-      r.key === rowKey
-        ? { ...r, probes: { ...r.probes, [protocol]: { ...r.probes[protocol], ...patch } } }
-        : r,
-    ));
-  };
-
-  // 自动检测单行：4 协议非流式 → 通过者再探流式。返回是否有任一协议通过。
-  const detectRow = async (row: ModelRow): Promise<boolean> => {
-    const c = connRef.current;
-    const cfg = configRef.current;
-
-    const model = c.providerId === CUSTOM_PROVIDER_ID ? row.label : row.modelByProvider[c.providerId] ?? row.label;
-    // 按模型族挑选要测的协议；未选中的协议标记为「跳过」，不发请求、不写历史。
-    const toTest = protocolsForModel(`${row.label} ${model}`);
-    const skipped = PROTOCOLS.filter((p) => !toTest.includes(p));
-
-    if (!c.baseUrl || !c.apiKey) {
-      const errResult: TestResult = {
-        ok: false, status: 0, latencyMs: 0, ttftMs: null, usage: EMPTY_USAGE,
-        text: "", error: t("conn.fillFirst"), attempts: 0,
-      };
-      for (const p of toTest) patchProbe(row.key, p, { status: "fail", result: errResult, streamVerdict: null, streamTtftMs: null });
-      for (const p of skipped) patchProbe(row.key, p, { status: "skipped", result: null, streamVerdict: null, streamTtftMs: null });
-      return false;
-    }
-
-    // 重置探针：待测协议进入测试中，其余标记跳过。
-    for (const p of toTest) patchProbe(row.key, p, { status: "testing", result: null, streamVerdict: null, streamTtftMs: null });
-    for (const p of skipped) patchProbe(row.key, p, { status: "skipped", result: null, streamVerdict: null, streamTtftMs: null });
-
-    const provider = providers.find((p) => p.id === c.providerId);
-    const providerName = provider?.name ?? (c.providerId === CUSTOM_PROVIDER_ID ? t("common.custom") : c.providerId);
-
-    let anyPass = false;
-
-    await Promise.all(toTest.map(async (proto) => {
-      const payload: TestPayload = {
-        protocol: proto,
-        baseUrl: c.baseUrl,
-        isFullUrl: Boolean(c.isFullUrl),
-        apiKey: c.apiKey,
-        model,
-        input: cfg.input,
-        stream: false,
-        timeoutMs: cfg.timeoutMs,
-        maxRetries: cfg.maxRetries,
-        maxTokens: cfg.maxTokens,
-        userAgent: cfg.userAgent,
-      };
-
-      // 非流式与流式独立并行探测：流式不再依赖非流式先通过，
-      // 这样只支持流式的端点也能被正确识别。
-      const streamProbe = (async () => {
-        let gotDelta = false;
-        let ttft: number | null = null;
-        const sres = await runTestStream({ ...payload, stream: true }, (ev) => {
-          if (ev.type === "delta") gotDelta = true;
-          else if (ev.type === "ttft") ttft = ev.ttftMs;
-        });
-        // 判定收紧：仅当收到 ≥1 个 delta 才算真流式；
-        // stream:true 却一次性返回（无增量）判为 single，避免假阳性。
-        const verdict: StreamVerdict = gotDelta ? "stream" : sres.ok ? "single" : "none";
-        return { verdict, ttftMs: ttft ?? sres.ttftMs, sres };
-      })();
-
-      const jsonResult = await runTestJson(payload);
-      const { verdict: streamVerdict, ttftMs: streamTtftMs, sres } = await streamProbe;
-
-      // 展示结果：优先非流式；非流式失败但流式成功时回退到流式结果。
-      const result = jsonResult.ok ? jsonResult : sres.ok ? sres : jsonResult;
-      const protoOk = result.ok;
-      if (protoOk) anyPass = true;
-      patchProbe(row.key, proto, {
-        status: protoOk ? "success" : "fail",
-        result,
-        streamVerdict,
-        streamTtftMs,
-      });
-
-      // 3) 写历史：每个「模型×协议」一条（非流式结果 + 流式结论）。
-      const entry: HistoryEntry = {
-        id: `${Date.now()}-${row.key}-${proto}-${Math.random().toString(36).slice(2, 6)}`,
-        ts: Date.now(),
-        providerName,
-        protocol: proto,
-        baseUrl: c.baseUrl,
-        isFullUrl: Boolean(c.isFullUrl),
-        apiKey: c.apiKey,
-        userAgent: cfg.userAgent,
-        model,
-        modelLabel: row.label,
-        streamVerdict,
-        result,
-      };
-      const next = appendHistory(historyRef.current, entry);
-      historyRef.current = next;
-      setHistory(next);
-    }));
-
-    return anyPass;
-  };
-
-  // 并发池执行一批行的自动检测。
-  const runBatch = async (targets: ModelRow[]) => {
-    if (!targets.length || busy) return;
-    setBusy(true);
-    const queue = [...targets];
-    let passed = 0;
-    const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
-      while (queue.length) {
-        const row = queue.shift()!;
-        if (await detectRow(row)) passed++;
-      }
-    });
-    await Promise.all(workers);
-    setBusy(false);
-    const total = targets.length;
-    showToast(
-      passed === total
-        ? t("app.batchAllPass", { total })
-        : t("app.batchPartial", { passed, total }),
-    );
   };
 
   const onTestSelected = () => runBatch(rows.filter((r) => r.checked));

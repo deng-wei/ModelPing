@@ -38,13 +38,10 @@ function lookup(dict: Record<string, unknown>, key: string): string | undefined 
 
 // 翻译：当前语言 → 英文兜底 → key 原样。支持 {name} 占位符插值。
 export function translate(lang: Lang, key: string, params?: Record<string, string | number>): string {
-  let s = lookup(DICTS[lang], key) ?? lookup(DICTS.en, key) ?? key;
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      s = s.replace(new RegExp(`\\{${k}\\}`, "g"), String(v));
-    }
-  }
-  return s;
+  const s = lookup(DICTS[lang], key) ?? lookup(DICTS.en, key) ?? key;
+  if (!params) return s;
+  // 单次扫描替换所有 {name} 占位符，避免逐 param 重新编译正则。
+  return s.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m));
 }
 
 export function getLang(): Lang {

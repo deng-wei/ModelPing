@@ -147,6 +147,7 @@ Use `STORAGE_DRIVER` to force a driver, and `SETTINGS_FILE` to override the file
 | ----------------------- | ---------------------------------------------------------------------------- |
 | `APP_PASSWORD`          | Optional access password; when set, all `/api` requests must send `x-app-password` |
 | `ALLOWED_HOSTS`         | Optional target-host allowlist (comma-separated), prevents open proxy / SSRF; unrestricted if unset |
+| `BLOCK_PRIVATE_HOSTS`   | Set to `1` to reject targets resolving to private/loopback/link-local/cloud-metadata addresses (app-level SSRF guard); off by default. Do **not** enable if you need to test local/intranet endpoints (e.g. Ollama) |
 | `CORS_ORIGIN`           | Optional CORS allowed origins (comma-separated, `*` = open to all); no ACAO header if unset (same-origin) |
 | `STORAGE_DRIVER`        | Force a driver: `file` / `cf-kv` / `vercel` / `none`                         |
 | `SETTINGS_FILE`         | Presets path for the file driver; defaults to `./web/public/presets.json`    |
@@ -159,6 +160,7 @@ Use `STORAGE_DRIVER` to force a driver, and `SETTINGS_FILE` to override the file
 - Keys in history live only in **your browser's localStorage** (persistence can be turned off in the panel).
 - **CORS is same-origin by default**: when `CORS_ORIGIN` is unset, the backend sends no `Access-Control-Allow-Origin`, so other sites' JS cannot call your `/api`. Configure allowed origins explicitly only when you need cross-site calls.
 - A bare public deployment is effectively an open proxy. **Private use is strongly recommended**, or make sure to enable `APP_PASSWORD` + `ALLOWED_HOSTS`. `APP_PASSWORD` is compared in constant time to reduce password-enumeration risk.
+- For untrusted multi-tenant deployments, set `BLOCK_PRIVATE_HOSTS=1` as an app-level complement to the firewall script (`deploy/firewall-egress.sh`). It rejects literal private/loopback/metadata IPs but cannot stop DNS rebinding — network-layer isolation remains authoritative.
 - The backend never logs keys or request bodies; keys/tokens/authorization in failure logs are redacted.
 
 ## Project structure

@@ -15,6 +15,7 @@ app.use("/api/*", async (c, next) => {
     APP_PASSWORD: env.APP_PASSWORD,
     ALLOWED_HOSTS: env.ALLOWED_HOSTS,
     CORS_ORIGIN: env.CORS_ORIGIN,
+    BLOCK_PRIVATE_HOSTS: env.BLOCK_PRIVATE_HOSTS,
     store: store ?? undefined,
   });
   await next();
