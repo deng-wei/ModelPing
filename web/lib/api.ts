@@ -121,13 +121,24 @@ export async function fetchBalance(payload: LookupPayload): Promise<Balance> {
 }
 
 // 非流式测试：直接返回 TestResult。
+// 始终返回 TestResult（不抛异常），网络/解析错误也归一为 ok:false 结果，
+// 避免 detectRow 的 Promise.all 因单个协议失败而整体拒绝、探针卡在 testing。
 export async function runTestJson(payload: TestPayload, signal?: AbortSignal): Promise<TestResult> {
-  const res = await fetch("/api/test", {
-    method: "POST",
-    headers: { "content-type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ ...payload, stream: false }),
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch("/api/test", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ ...payload, stream: false }),
+      signal,
+    });
+  } catch (e: any) {
+    return {
+      ok: false, status: 0, latencyMs: 0, ttftMs: null,
+      usage: EMPTY_USAGE,
+      text: "", error: e?.message ?? String(e), requestUrl: null, attempts: 0,
+    };
+  }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try {
@@ -140,7 +151,15 @@ export async function runTestJson(payload: TestPayload, signal?: AbortSignal): P
       text: "", error: msg, requestUrl: null, attempts: 0,
     };
   }
-  return res.json();
+  try {
+    return await res.json();
+  } catch (e: any) {
+    return {
+      ok: false, status: res.status, latencyMs: 0, ttftMs: null,
+      usage: EMPTY_USAGE,
+      text: "", error: `响应解析失败: ${e?.message ?? e}`, requestUrl: null, attempts: 0,
+    };
+  }
 }
 
 // 流式测试：解析后端吐回的 SSE（每个 data: 是一个 StreamEvent），
@@ -150,12 +169,23 @@ export async function runTestStream(
   onEvent: (ev: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<TestResult> {
-  const res = await fetch("/api/test", {
-    method: "POST",
-    headers: { "content-type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ ...payload, stream: true }),
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch("/api/test", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ ...payload, stream: true }),
+      signal,
+    });
+  } catch (e: any) {
+    const result: TestResult = {
+      ok: false, status: 0, latencyMs: 0, ttftMs: null,
+      usage: EMPTY_USAGE,
+      text: "", error: e?.message ?? String(e), requestUrl: null, attempts: 0,
+    };
+    onEvent({ type: "error", error: result.error!, status: 0 });
+    return result;
+  }
 
   if (!res.ok || !res.body) {
     let msg = `HTTP ${res.status}`;
@@ -190,15 +220,26 @@ export async function runTestStream(
     if (ev.type === "done") finalResult = ev.result;
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const { blocks, rest } = drainSseBlocks(buf);
-    buf = rest;
-    for (const block of blocks) handleBlock(block);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const { blocks, rest } = drainSseBlocks(buf);
+      buf = rest;
+      for (const block of blocks) handleBlock(block);
+    }
+    if (buf.trim()) handleBlock(buf);
+  } catch (e: any) {
+    // 流读取异常（连接中断等）：若已收到 done 则用之，否则返回错误结果。
+    return (
+      finalResult ?? {
+        ok: false, status: 0, latencyMs: 0, ttftMs: null,
+        usage: EMPTY_USAGE,
+        text: "", error: e?.message ?? String(e), requestUrl: null, attempts: 0,
+      }
+    );
   }
-  if (buf.trim()) handleBlock(buf);
 
   return (
     finalResult ?? {

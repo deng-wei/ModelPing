@@ -197,10 +197,22 @@ async function runOnce(adapter: Adapter, req: TestRequest, attempt: number, sign
     }
     const json = await res.json();
     const latencyMs = Date.now() - start;
+    const text = truncate(adapter.extractText(json));
+    const usage = adapter.parseUsage(json);
+    // HTTP 200 但响应不含任何 LLM 内容（无输出文本、无 token 用量），
+    // 说明该 URL 大概率不是 LLM 端点（如普通网站/代理返回了空 JSON）。
+    // 不应判为通过，否则用户会误以为测试走了正确的 API 却没有结果。
+    if (!text && usage.inputTokens == null && usage.outputTokens == null && usage.totalTokens == null) {
+      const error = `HTTP ${res.status} response contains no LLM content (no output text and no token usage); verify the URL points to a valid LLM endpoint`;
+      return {
+        ok: false, status: res.status, latencyMs, ttftMs: null,
+        usage, text: "", error, requestUrl, attempts: 1,
+        ...failureFields(req, { url, status: res.status, latencyMs, attempt, error }),
+      };
+    }
     return {
       ok: true, status: res.status, latencyMs, ttftMs: null,
-      usage: adapter.parseUsage(json), text: truncate(adapter.extractText(json)),
-      error: null, requestUrl, attempts: 1,
+      usage, text, error: null, requestUrl, attempts: 1,
     };
   } catch (e: any) {
     if (signal?.aborted) throw abortError(signal);
@@ -359,9 +371,24 @@ async function* runStreamOnce(adapter: Adapter, req: TestRequest, attempt: numbe
   }
 
   cleanup();
+  const finalText = truncate(text);
+  const streamLatencyMs = Date.now() - start;
+  // 流式正常结束但无任何 LLM 内容（无输出文本、无 token 用量），
+  // 说明该 URL 大概率不是 LLM 端点。与非流式 runOnce 保持一致判定。
+  if (!finalText && usage.inputTokens == null && usage.outputTokens == null && usage.totalTokens == null) {
+    const error = `HTTP ${res.status} response contains no LLM content (no output text and no token usage); verify the URL points to a valid LLM endpoint`;
+    yield {
+      type: "done",
+      result: {
+        ok: false, status: res.status, latencyMs: streamLatencyMs, ttftMs, usage, text: "", error, requestUrl, attempts: 1,
+        ...failureFields(req, { url, status: res.status, latencyMs: streamLatencyMs, attempt, error }),
+      },
+    };
+    return;
+  }
   yield {
     type: "done",
-    result: { ok: true, status: res.status, latencyMs: Date.now() - start, ttftMs, usage, text: truncate(text), error: null, requestUrl, attempts: 1 },
+    result: { ok: true, status: res.status, latencyMs: streamLatencyMs, ttftMs, usage, text: finalText, error: null, requestUrl, attempts: 1 },
   };
 }
 

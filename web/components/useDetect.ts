@@ -93,56 +93,72 @@ export function useDetect(deps: DetectDeps) {
         userAgent: cfg.userAgent,
       };
 
-      // 非流式与流式独立并行探测：流式不再依赖非流式先通过，
-      // 这样只支持流式的端点也能被正确识别。
-      const streamProbe = (async () => {
-        let gotDelta = false;
-        let ttft: number | null = null;
-        const sres = await runTestStream({ ...payload, stream: true }, (ev) => {
-          if (ev.type === "delta") gotDelta = true;
-          else if (ev.type === "ttft") ttft = ev.ttftMs;
-        }, signal);
-        // 判定收紧：仅当收到 ≥1 个 delta 才算真流式；
-        // stream:true 却一次性返回（无增量）判为 single，避免假阳性。
-        const verdict: StreamVerdict = gotDelta ? "stream" : sres.ok ? "single" : "none";
-        return { verdict, ttftMs: ttft ?? sres.ttftMs, sres };
-      })();
+      try {
+        // 非流式与流式独立并行探测：流式不再依赖非流式先通过，
+        // 这样只支持流式的端点也能被正确识别。
+        const streamProbe = (async () => {
+          let gotDelta = false;
+          let ttft: number | null = null;
+          const sres = await runTestStream({ ...payload, stream: true }, (ev) => {
+            if (ev.type === "delta") gotDelta = true;
+            else if (ev.type === "ttft") ttft = ev.ttftMs;
+          }, signal);
+          // 判定收紧：仅当收到 ≥1 个 delta 才算真流式；
+          // stream:true 却一次性返回（无增量）判为 single，避免假阳性。
+          const verdict: StreamVerdict = gotDelta ? "stream" : sres.ok ? "single" : "none";
+          return { verdict, ttftMs: ttft ?? sres.ttftMs, sres };
+        })();
 
-      const [jsonResult, streamResult] = await Promise.all([
-        runTestJson(payload, signal),
-        streamProbe,
-      ]);
-      const { verdict: streamVerdict, ttftMs: streamTtftMs, sres } = streamResult;
+        const [jsonResult, streamResult] = await Promise.all([
+          runTestJson(payload, signal),
+          streamProbe,
+        ]);
+        const { verdict: streamVerdict, ttftMs: streamTtftMs, sres } = streamResult;
 
-      // 展示结果：优先非流式；非流式失败但流式成功时回退到流式结果。
-      const result = jsonResult.ok ? jsonResult : sres.ok ? sres : jsonResult;
-      const protoOk = result.ok;
-      if (protoOk) anyPass = true;
-      patchProbe(row.key, proto, {
-        status: protoOk ? "success" : "fail",
-        result,
-        streamVerdict,
-        streamTtftMs,
-      });
+        // 展示结果：优先非流式；非流式失败但流式成功时回退到流式结果。
+        const result = jsonResult.ok ? jsonResult : sres.ok ? sres : jsonResult;
+        const protoOk = result.ok;
+        if (protoOk) anyPass = true;
+        patchProbe(row.key, proto, {
+          status: protoOk ? "success" : "fail",
+          result,
+          streamVerdict,
+          streamTtftMs,
+        });
 
-      // 写历史：每个「模型×协议」一条（非流式结果 + 流式结论）。
-      const entry: HistoryEntry = {
-        id: `${Date.now()}-${row.key}-${proto}-${Math.random().toString(36).slice(2, 6)}`,
-        ts: Date.now(),
-        providerName,
-        protocol: proto,
-        baseUrl: c.baseUrl,
-        isFullUrl: Boolean(c.isFullUrl),
-        apiKey: c.apiKey,
-        userAgent: cfg.userAgent,
-        model,
-        modelLabel: row.label,
-        streamVerdict,
-        result,
-      };
-      const next = appendHistory(historyRef.current, entry);
-      historyRef.current = next;
-      setHistory(next);
+        // 写历史：每个「模型×协议」一条（非流式结果 + 流式结论）。
+        const entry: HistoryEntry = {
+          id: `${Date.now()}-${row.key}-${proto}-${Math.random().toString(36).slice(2, 6)}`,
+          ts: Date.now(),
+          providerName,
+          protocol: proto,
+          baseUrl: c.baseUrl,
+          isFullUrl: Boolean(c.isFullUrl),
+          apiKey: c.apiKey,
+          userAgent: cfg.userAgent,
+          model,
+          modelLabel: row.label,
+          streamVerdict,
+          result,
+        };
+        const next = appendHistory(historyRef.current, entry);
+        historyRef.current = next;
+        setHistory(next);
+      } catch (e: any) {
+        // 兜底：即使 runTestJson/runTestStream 已不抛异常，
+        // 仍可能因其他运行时错误导致探测失败。确保探针被更新，避免卡在 testing。
+        if (signal?.aborted) return; // 取消时不更新，由 resetTestingProbes 处理
+        const errResult: TestResult = {
+          ok: false, status: 0, latencyMs: 0, ttftMs: null, usage: EMPTY_USAGE,
+          text: "", error: e?.message ?? String(e), attempts: 0,
+        };
+        patchProbe(row.key, proto, {
+          status: "fail",
+          result: errResult,
+          streamVerdict: null,
+          streamTtftMs: null,
+        });
+      }
     }));
 
     return anyPass;
@@ -194,6 +210,10 @@ export function useDetect(deps: DetectDeps) {
         const total = targets.length;
         showToast(passed === total ? t("app.batchAllPass", { total }) : t("app.batchPartial", { passed, total }));
       }
+    } catch (e: any) {
+      // 非取消类的意外错误：重置仍处于 testing 的探针，避免卡死。
+      resetTestingProbes();
+      showToast(e?.message ?? String(e));
     } finally {
       if (batchControllerRef.current === controller) batchControllerRef.current = null;
       setBusy(false);
