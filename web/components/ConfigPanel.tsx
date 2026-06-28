@@ -1,4 +1,4 @@
-import type { ConfigState } from "../lib/storage.js";
+import type { ConfigState } from "../lib/types.js";
 import { useI18n } from "../lib/i18n.js";
 import { USER_AGENT_PRESETS, isValidUserAgentHeader } from "../lib/user-agent.js";
 

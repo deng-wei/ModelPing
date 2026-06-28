@@ -19,11 +19,26 @@ services:
       # 首次卷为空时 /presets.json 会自动回退到镜像内置默认预设。
       STORAGE_DRIVER: "file"
       SETTINGS_FILE: "/data/presets.json"
+      # 强烈建议单独设置长随机 PRIVATE_STATE_SECRET；未设时才回退 STATUS_SECRET/APP_PASSWORD。
+      PRIVATE_STATE_SECRET: "${PRIVATE_STATE_SECRET:?请在 .env 设置 PRIVATE_STATE_SECRET（长随机值）}"
+      PRIVATE_STATE_FILE: "/app/data/private-state.enc"
+      # 旧状态页密文配置；保留兼容，private-state 未设密钥时也可复用 STATUS_SECRET。
+      STATUS_SECRET: "${STATUS_SECRET:-}"
+      STATUS_FILE: "/app/data/status.enc"
 
       PORT: "8787"
     volumes:
       # 持久化 presets：宿主命名卷 → 容器 /data（SETTINGS_FILE 指向此处）。
       - presets-data:/data
+      # 持久化私有工作态/旧状态页密文。
+      - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     labels:
       # 仅让 Watchtower 监控带此标签的容器。

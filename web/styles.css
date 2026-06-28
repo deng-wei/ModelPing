@@ -352,6 +352,31 @@ button.model-card {
   padding: 2px 4px;
 }
 .model-remove:hover { color: var(--red); }
+.model-card-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+.model-status-add {
+  color: var(--accent);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 5px;
+  white-space: nowrap;
+}
+.model-status-add:hover:not(.disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+.model-status-add.disabled {
+  color: var(--text-dim);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .model-preview {
   display: block;
   width: 100%;
@@ -362,6 +387,38 @@ button.model-card {
 
 .history-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .history-controls .spacer { flex: 1; }
+.status-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 0 0 12px;
+  flex-wrap: wrap;
+}
+.status-memory { margin-bottom: 10px; text-align: left; }
+.status-auto {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.status-auto select { max-width: 110px; }
+.status-table td { vertical-align: top; }
+.status-provider {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.status-model {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  margin-bottom: 4px;
+}
+.status-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 
 .settings-toolbar {
   display: flex;
@@ -505,6 +562,26 @@ details.det summary { cursor: pointer; color: var(--text-dim); font-size: 11px; 
   background: color-mix(in srgb, var(--green) 14%, var(--panel-2));
 }
 .pbadge.fail {
+  border-color: var(--red);
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, var(--panel-2));
+}
+.pbadge.good {
+  border-color: var(--green);
+  color: var(--text);
+  background: color-mix(in srgb, var(--green) 14%, var(--panel-2));
+}
+.pbadge.ok {
+  border-color: var(--yellow);
+  color: var(--text);
+  background: color-mix(in srgb, var(--yellow) 14%, var(--panel-2));
+}
+.pbadge.slow {
+  border-color: var(--red);
+  color: var(--text);
+  background: color-mix(in srgb, var(--red) 10%, var(--panel-2));
+}
+.pbadge.bad {
   border-color: var(--red);
   color: var(--red);
   background: color-mix(in srgb, var(--red) 12%, var(--panel-2));

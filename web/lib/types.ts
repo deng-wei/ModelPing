@@ -81,6 +81,44 @@ export interface ModelsResult {
   models: string[];
 }
 
+// ---------- 端点延迟测速（ping，镜像后端 src/types.ts） ----------
+export interface PingResult {
+  ok: boolean;
+  status: number;                  // HTTP 状态码（0=网络层失败）
+  latencyMs: number;
+  kind: "models" | "completion";   // 测速走的路径
+  error: string | null;
+}
+
+// ---------- 状态列表条目（持久化到后端，加密落盘） ----------
+// 含 apiKey；仅经后端加密存储，前端不再明文落 localStorage。
+export interface StatusEntry {
+  id: string;
+  providerName: string;
+  protocol: Protocol;
+  baseUrl: string;
+  isFullUrl?: boolean;
+  apiKey: string;
+  userAgent?: string;
+  model: string;
+}
+
+export interface ConnState {
+  providerId: string;
+  baseUrl: string;
+  isFullUrl?: boolean;
+  apiKey: string;
+}
+
+export interface ConfigState {
+  input: string;
+  timeoutMs: number;
+  maxRetries: number;
+  maxTokens: number;
+  userAgent: string;
+  concurrency: number;
+}
+
 // 一条历史记录（每条 = 一个「模型 × 协议」的探测结果）。
 export interface HistoryEntry {
   id: string;
@@ -95,4 +133,14 @@ export interface HistoryEntry {
   modelLabel: string;
   streamVerdict: StreamVerdict; // 流式探测结论（stream/single/none/null）
   result: TestResult;    // 非流式探测结果
+}
+
+export interface PrivateState {
+  v: 1;
+  historyPersist: boolean;
+  history: HistoryEntry[];
+  conn: ConnState | null;
+  config: Partial<ConfigState> | null;
+  statusEntries: StatusEntry[];
+  updatedAt: number;
 }

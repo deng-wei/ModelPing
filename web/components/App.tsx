@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { Defaults, HistoryEntry, PresetsResponse, ProviderPreset } from "../lib/types.js";
-import { fetchHealth, fetchPresets, fetchSettings, saveSettings, setAppPassword } from "../lib/api.js";
-import {
-  getPersist, loadConfig, loadConn, loadHistory,
-  saveConfig, saveConn, setPersist as persistSetPersist, clearHistory,
-  type ConfigState, type ConnState,
-} from "../lib/storage.js";
+import type { ConfigState, Defaults, HistoryEntry, PresetsResponse, PrivateState, ProviderPreset, StatusEntry } from "../lib/types.js";
+import { emptyPrivateState, fetchHealth, fetchPresets, fetchPrivateState, fetchSettings, savePrivateState, saveSettings, setAppPassword } from "../lib/api.js";
 import {
   CUSTOM_PROVIDER_ID,
   FALLBACK_DEFAULTS,
@@ -20,11 +15,18 @@ import { HistoryPanel } from "./HistoryPanel.js";
 import { ThemeToggle } from "./ThemeToggle.js";
 import { LangToggle } from "./LangToggle.js";
 import { SettingsPanel } from "./SettingsPanel.js";
+import { StatusPanel } from "./StatusPanel.js";
 import { initLang, useI18n } from "../lib/i18n.js";
 import { useDetect } from "./useDetect.js";
+import { migrateLegacyPrivateState } from "../lib/storage.js";
 
 let rowSeq = 0;
 const nextKey = () => `r${++rowSeq}`;
+let statusSeq = 0;
+const nextStatusId = () => `s${Date.now()}-${++statusSeq}`;
+const MAX_HISTORY = 200;
+
+type StatusDraft = Omit<StatusEntry, "id">;
 
 // 由全部供应商预设生成按官方名去重的模型行（每行含 4 个 idle 协议探针）。
 function buildRows(providers: ProviderPreset[], selectedProviderId = CUSTOM_PROVIDER_ID): ModelRow[] {
@@ -66,12 +68,14 @@ export function App() {
   const { t, lang } = useI18n();
   const [providers, setProviders] = useState<ProviderPreset[]>([]);
   const [presetDefaults, setPresetDefaults] = useState<Defaults>(FALLBACK_DEFAULTS);
-  const [activeTab, setActiveTab] = useState<"test" | "settings">("test");
+  const [activeTab, setActiveTab] = useState<"test" | "status" | "settings">("test");
   const [conn, setConn] = useState<ConnValue>({ providerId: CUSTOM_PROVIDER_ID, baseUrl: "", isFullUrl: false, apiKey: "" });
   const [config, setConfig] = useState<ConfigState>({ input: "", timeoutMs: 30000, maxRetries: 1, maxTokens: 512, userAgent: "", concurrency: 2 });
   const [rows, setRows] = useState<ModelRow[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [persist, setPersistState] = useState<boolean>(getPersist());
+  const [statusEntries, setStatusEntries] = useState<StatusEntry[]>([]);
+  const [statusPersisted, setStatusPersisted] = useState(true);
+  const [persist, setPersistState] = useState<boolean>(true);
   const [toast, setToast] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
@@ -82,6 +86,10 @@ export function App() {
 
   // 服务端是否启用了持久化（presets 跨设备共享）。null=未知，初始化时探测。
   const serverPersistRef = useRef<boolean>(false);
+  const statusPersistedRef = useRef(true);
+  const privatePersistRef = useRef(false);
+  const privateSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const privateStateRef = useRef<PrivateState>(emptyPrivateState());
   // ConfigPanel 参数 → defaults 同步到后端的防抖句柄。
   const configSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 当前语言对应的默认输入文本；语言切换时若用户未自定义则跟随更新。
@@ -89,12 +97,45 @@ export function App() {
 
   const historyRef = useRef(history);
   historyRef.current = history;
+  const statusEntriesRef = useRef(statusEntries);
+  statusEntriesRef.current = statusEntries;
 
   // 当前连接/参数的 ref，供并发探测闭包读取最新值。
   const connRef = useRef(conn);
   connRef.current = conn;
   const configRef = useRef(config);
   configRef.current = config;
+
+  const syncPrivateRef = (patch: Partial<PrivateState>) => {
+    privateStateRef.current = {
+      ...privateStateRef.current,
+      ...patch,
+      updatedAt: Date.now(),
+    };
+  };
+
+  const schedulePrivateSave = () => {
+    if (!privatePersistRef.current) return;
+    if (privateSaveRef.current) clearTimeout(privateSaveRef.current);
+    privateSaveRef.current = setTimeout(() => {
+      const state = privateStateRef.current;
+      savePrivateState(state)
+        .then((ok) => {
+          if (!ok) {
+            privatePersistRef.current = false;
+            statusPersistedRef.current = false;
+            setStatusPersisted(false);
+            showToast(t("app.privateStateUnavailable"));
+          }
+        })
+        .catch((e) => showToast(t("app.privateStateSaveFailed", { msg: e?.message ?? e })));
+    }, 800);
+  };
+
+  const persistPrivateState = (patch: Partial<PrivateState>) => {
+    syncPrivateRef(patch);
+    schedulePrivateSave();
+  };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -103,7 +144,20 @@ export function App() {
 
   // 模型检测引擎（单行 4 协议探测 + 并发池）已抽到 useDetect；busy 由其持有。
   const { busy, progress, runBatch, cancelBatch } = useDetect({
-    connRef, configRef, providers, setRows, historyRef, setHistory, showToast,
+    connRef,
+    configRef,
+    providers,
+    setRows,
+    historyRef,
+    addHistoryEntry: (entry) => {
+      setHistory((prev) => {
+        const next = [entry, ...prev].slice(0, MAX_HISTORY);
+        historyRef.current = next;
+        if (privateStateRef.current.historyPersist) persistPrivateState({ history: next });
+        return next;
+      });
+    },
+    showToast,
   });
 
   // 应用主题（system 模式跟随系统切换）与语言（<html lang> + 标题）。
@@ -131,15 +185,36 @@ export function App() {
       const serverPresets = await fetchSettings();
       serverPersistRef.current = serverPresets !== null;
       const activePresets = serverPresets ?? loadLocalPresets() ?? fetchedPresets;
+      const privateState = await fetchPrivateState();
+      const privateCanPersist = privateState !== null;
+      privatePersistRef.current = privateCanPersist;
+      statusPersistedRef.current = privateCanPersist;
+      setStatusPersisted(privateCanPersist);
+      const legacy = migrateLegacyPrivateState();
+      const mergedPrivateState: PrivateState = {
+        ...(privateState ?? emptyPrivateState()),
+        historyPersist: privateState?.historyPersist ?? legacy.historyPersist ?? true,
+        history: privateState?.history?.length ? privateState.history : (legacy.history ?? []),
+        conn: privateState?.conn ?? legacy.conn ?? null,
+        config: privateState?.config ?? legacy.config ?? null,
+        statusEntries: privateState?.statusEntries ?? [],
+      };
+      privateStateRef.current = mergedPrivateState;
+      if (privateCanPersist && (legacy.historyPersist !== undefined || legacy.history || legacy.conn || legacy.config)) {
+        syncPrivateRef(mergedPrivateState);
+        schedulePrivateSave();
+      }
       // 服务端可用时，把结果回写本地作镜像缓存（离线/失败时仍可用）。
       if (serverPresets) saveLocalPresets(serverPresets);
       const { providers: provs, defaults: defs } = activePresets;
       setPresetDefaults(defs);
       setProviders(provs);
-      setHistory(loadHistory());
+      setHistory(mergedPrivateState.history);
+      setPersistState(mergedPrivateState.historyPersist);
+      setStatusEntries(mergedPrivateState.statusEntries);
 
       // 恢复参数配置
-      const savedCfg = loadConfig();
+      const savedCfg = mergedPrivateState.config;
       const cfg: ConfigState = {
         input: savedCfg?.input ?? defaultInputRef.current,
         timeoutMs: savedCfg?.timeoutMs ?? defs.timeoutMs,
@@ -151,7 +226,7 @@ export function App() {
       setConfig(cfg);
 
       // 恢复连接字段（含 key），但供应商始终默认「自定义」。
-      const savedConn = loadConn();
+      const savedConn = mergedPrivateState.conn;
       setConn({
         providerId: CUSTOM_PROVIDER_ID,
         baseUrl: savedConn?.baseUrl ?? "",
@@ -182,7 +257,6 @@ export function App() {
       return prev;
     });
     // t 的取值仅随 lang 变化，故依赖仅需 lang。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang]);
 
   // 提交口令后重试初始化。
@@ -197,14 +271,14 @@ export function App() {
   const onConnChange = (v: ConnValue) => {
     const providerChanged = v.providerId !== conn.providerId;
     setConn(v);
-    saveConn({ providerId: v.providerId, baseUrl: v.baseUrl, isFullUrl: Boolean(v.isFullUrl), apiKey: v.apiKey } as ConnState);
+    persistPrivateState({ conn: { providerId: v.providerId, baseUrl: v.baseUrl, isFullUrl: Boolean(v.isFullUrl), apiKey: v.apiKey } });
     if (providerChanged) setRows((rs) => selectRowsForProvider(rs, v.providerId));
   };
 
   const onConfigChange = (v: ConfigState) => {
     const nextConfig = { ...v, concurrency: normalizeConcurrency(v.concurrency) };
     setConfig(nextConfig);
-    saveConfig(nextConfig);
+    persistPrivateState({ config: nextConfig });
     // 参数当默认值同步到后端 defaults（防抖，避免逐字输入狂发请求）。
     if (serverPersistRef.current) {
       if (configSyncRef.current) clearTimeout(configSyncRef.current);
@@ -252,7 +326,7 @@ export function App() {
         ? { ...currentConn, baseUrl: selected.baseUrl, isFullUrl: Boolean(selected.isFullUrl) }
         : { providerId: CUSTOM_PROVIDER_ID, baseUrl: "", isFullUrl: false, apiKey: currentConn.apiKey };
       setConn(nextConn);
-      saveConn({ providerId: nextConn.providerId, baseUrl: nextConn.baseUrl, isFullUrl: Boolean(nextConn.isFullUrl), apiKey: nextConn.apiKey } as ConnState);
+      persistPrivateState({ conn: { providerId: nextConn.providerId, baseUrl: nextConn.baseUrl, isFullUrl: Boolean(nextConn.isFullUrl), apiKey: nextConn.apiKey } });
     }
 
     setRows(buildRows(presets.providers, nextConn.providerId));
@@ -268,14 +342,20 @@ export function App() {
   };
 
   const onTogglePersist = (on: boolean) => {
-    persistSetPersist(on);
     setPersistState(on);
-    if (!on) setHistory([]); // 关闭即清内存展示（storage 已被清）
+    if (!on) {
+      setHistory([]);
+      historyRef.current = [];
+      persistPrivateState({ historyPersist: false, history: [] });
+    } else {
+      persistPrivateState({ historyPersist: true, history: historyRef.current });
+    }
   };
 
   const onClearHistory = () => {
-    clearHistory();
     setHistory([]);
+    historyRef.current = [];
+    persistPrivateState({ history: [] });
   };
 
   const onTestSelected = () => runBatch(rows.filter((r) => r.checked));
@@ -304,6 +384,51 @@ export function App() {
     });
   };
   const onRemoveModel = (key: string) => setRows((rs) => rs.filter((r) => r.key !== key));
+
+  const statusKey = (entry: Pick<StatusEntry, "baseUrl" | "protocol" | "model">) =>
+    `${entry.baseUrl.trim()}|${entry.protocol}|${entry.model.trim()}`;
+
+  const onAddToStatus = (drafts: StatusDraft[]) => {
+    const clean = drafts.filter((entry) => entry.baseUrl.trim() && entry.apiKey.trim() && entry.model.trim());
+    if (clean.length === 0) return;
+    const byKey = new Map<string, StatusEntry>();
+    for (const entry of statusEntriesRef.current) byKey.set(statusKey(entry), entry);
+    let changed = false;
+    for (const draft of clean) {
+      const key = statusKey(draft);
+      const existing = byKey.get(key);
+      if (existing) {
+        byKey.set(key, { ...existing, ...draft });
+      } else {
+        byKey.set(key, { ...draft, id: nextStatusId() });
+      }
+      changed = true;
+    }
+    if (!changed) return;
+    const next = [...byKey.values()];
+    setStatusEntries(next);
+    persistPrivateState({ statusEntries: next });
+    showToast(t("status.added", { count: clean.length }));
+  };
+
+  const onDeleteStatus = (ids: string[]) => {
+    const idSet = new Set(ids);
+    const next = statusEntriesRef.current.filter((entry) => !idSet.has(entry.id));
+    setStatusEntries(next);
+    persistPrivateState({ statusEntries: next });
+    showToast(t("status.deleted", { count: ids.length }));
+  };
+
+  const onGotoStatusTest = (entry: StatusEntry) => {
+    setActiveTab("test");
+    onConnChange({
+      providerId: CUSTOM_PROVIDER_ID,
+      baseUrl: entry.baseUrl,
+      isFullUrl: Boolean(entry.isFullUrl),
+      apiKey: entry.apiKey,
+    });
+    onAddModel(entry.model);
+  };
 
   // 批量加入模型（来自「拉取模型」弹层）：已存在则勾选，否则新增 custom 行。
   const onAddModels = (ids: string[]) => {
@@ -388,6 +513,14 @@ export function App() {
         >
           {t("app.tabSettings")}
         </button>
+        <button
+          type="button"
+          class={"app-tab " + (activeTab === "status" ? "active" : "")}
+          aria-current={activeTab === "status" ? "page" : undefined}
+          onClick={() => setActiveTab("status")}
+        >
+          {t("app.tabStatus")}
+        </button>
       </nav>
 
       {loadErr ? (
@@ -405,6 +538,7 @@ export function App() {
             busy={busy}
             progress={progress}
             conn={conn}
+            userAgent={config.userAgent}
             providerName={
               providers.find((p) => p.id === conn.providerId)?.name ??
               (conn.providerId === CUSTOM_PROVIDER_ID ? t("common.custom") : conn.providerId)
@@ -416,6 +550,7 @@ export function App() {
             onTestSelected={onTestSelected}
             onCancel={cancelBatch}
             onTestAll={onTestAll}
+            onAddToStatus={onAddToStatus}
             onLaunched={showToast}
           />
           <HistoryPanel
@@ -426,6 +561,14 @@ export function App() {
             onLaunched={showToast}
           />
         </>
+      ) : activeTab === "status" ? (
+        <StatusPanel
+          entries={statusEntries}
+          persisted={statusPersisted}
+          onDelete={onDeleteStatus}
+          onGotoTest={onGotoStatusTest}
+          onLaunched={showToast}
+        />
       ) : (
         <>
           <ConfigPanel value={config} onChange={onConfigChange} />

@@ -1,22 +1,16 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { readFile } from "node:fs/promises";
-import { createApp, type Env } from "./app.js";
-import { createStore, DEFAULT_SETTINGS_FILE } from "./store/index.js";
+import { createApp } from "./app.js";
+import { buildAppEnv } from "./env.js";
+import { DEFAULT_SETTINGS_FILE } from "./store/index.js";
 
 // Node 入口：复用框架无关的 app，叠加静态资源服务（dist/client）。
 // 环境变量从 process.env 注入到 Hono 的 c.env。
 // 设置持久化默认用 FileStore（./web/public/presets.json），可用 STORAGE_DRIVER / SETTINGS_FILE 覆盖。
-const store = await createStore(process.env);
 // /presets.json 与 FileStore 指向同一源文件，UI 修改与手改文件统一、改即生效。
 const PRESETS_FILE = process.env.SETTINGS_FILE || DEFAULT_SETTINGS_FILE;
-const env: Env = {
-  APP_PASSWORD: process.env.APP_PASSWORD,
-  ALLOWED_HOSTS: process.env.ALLOWED_HOSTS,
-  CORS_ORIGIN: process.env.CORS_ORIGIN,
-  BLOCK_PRIVATE_HOSTS: process.env.BLOCK_PRIVATE_HOSTS,
-  store: store ?? undefined,
-};
+const env = await buildAppEnv(process.env);
 
 const app = createApp();
 
@@ -62,4 +56,8 @@ serve({ fetch, port }, (info) => {
   if (env.APP_PASSWORD) console.log("访问口令已启用 (APP_PASSWORD)");
   if (env.ALLOWED_HOSTS) console.log(`目标主机白名单: ${env.ALLOWED_HOSTS}`);
   console.log(env.store ? "设置持久化已启用（跨设备共享）" : "设置持久化未启用（前端本地模式）");
+  const statusReady = env.statusStore && (env.STATUS_SECRET || env.APP_PASSWORD);
+  console.log(statusReady ? "状态持久化已启用（加密落盘）" : "状态持久化未启用（需 store + APP_PASSWORD/STATUS_SECRET，前端走内存模式）");
+  const privateReady = env.privateStore && (env.PRIVATE_STATE_SECRET || env.STATUS_SECRET || env.APP_PASSWORD);
+  console.log(privateReady ? "私有工作态持久化已启用（加密落盘）" : "私有工作态持久化未启用（需 store + APP_PASSWORD/STATUS_SECRET/PRIVATE_STATE_SECRET）");
 });

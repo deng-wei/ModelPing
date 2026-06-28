@@ -2,12 +2,10 @@ import { useRef, useState } from "preact/hooks";
 import type { Dispatch, StateUpdater } from "preact/hooks";
 import type { HistoryEntry, Protocol, TestResult } from "../lib/types.js";
 import { EMPTY_USAGE, runTestJson, runTestStream, type TestPayload } from "../lib/api.js";
-import { appendHistory } from "../lib/storage.js";
 import { CUSTOM_PROVIDER_ID } from "../lib/presets.js";
 import { PROTOCOLS, protocolsForModel, type ModelRow, type ProtocolProbe } from "./ModelTable.js";
 import type { ConnValue } from "./ConnectionPanel.js";
-import type { ConfigState } from "../lib/storage.js";
-import type { ProviderPreset, StreamVerdict } from "../lib/types.js";
+import type { ConfigState, ProviderPreset, StreamVerdict } from "../lib/types.js";
 import { useI18n } from "../lib/i18n.js";
 import { runConcurrent } from "../lib/concurrency.js";
 
@@ -23,14 +21,14 @@ export interface DetectDeps {
   providers: ProviderPreset[];
   setRows: Dispatch<StateUpdater<ModelRow[]>>;
   historyRef: { current: HistoryEntry[] };
-  setHistory: Dispatch<StateUpdater<HistoryEntry[]>>;
+  addHistoryEntry: (entry: HistoryEntry) => void;
   showToast: (msg: string) => void;
 }
 
 // 模型检测引擎：单行 4 协议探测 + 并发池批量执行。
 // 从 App 抽出的自包含单元——只依赖传入的 ref/setter，不持有连接/参数 state。
 export function useDetect(deps: DetectDeps) {
-  const { connRef, configRef, providers, setRows, historyRef, setHistory, showToast } = deps;
+  const { connRef, configRef, providers, setRows, addHistoryEntry, showToast } = deps;
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<BatchProgress>({ completed: 0, total: 0 });
@@ -141,9 +139,7 @@ export function useDetect(deps: DetectDeps) {
           streamVerdict,
           result,
         };
-        const next = appendHistory(historyRef.current, entry);
-        historyRef.current = next;
-        setHistory(next);
+        addHistoryEntry(entry);
       } catch (e: any) {
         // 兜底：即使 runTestJson/runTestStream 已不抛异常，
         // 仍可能因其他运行时错误导致探测失败。确保探针被更新，避免卡在 testing。

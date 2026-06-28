@@ -1,5 +1,6 @@
 node_modules/
 dist/
+data/
 # 源码目录下的 tsc 编译产物（真正的构建输出在 dist/）
 src/**/*.js
 .wrangler/

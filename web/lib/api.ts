@@ -1,4 +1,4 @@
-import type { Balance, ModelsResult, PresetsResponse, StreamEvent, TestResult, Usage } from "./types.js";
+import type { Balance, ModelsResult, PingResult, PresetsResponse, PrivateState, StatusEntry, StreamEvent, TestResult, Usage } from "./types.js";
 import { normalizePresets } from "./presets.js";
 import { drainSseBlocks, extractSseData } from "../../src/sse.js";
 
@@ -77,6 +77,65 @@ export async function saveSettings(presets: PresetsResponse): Promise<boolean> {
   return true;
 }
 
+export function emptyPrivateState(): PrivateState {
+  return {
+    v: 1,
+    historyPersist: true,
+    history: [],
+    conn: null,
+    config: null,
+    statusEntries: [],
+    updatedAt: Date.now(),
+  };
+}
+
+export async function fetchPrivateState(): Promise<PrivateState | null> {
+  const res = await fetch("/api/private-state", { headers: authHeaders(), cache: "no-cache" });
+  if (res.status === 204) return null;
+  if (res.status === 409) {
+    let msg = "私有工作态无法解密";
+    try {
+      const j: any = await res.json();
+      if (j?.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  if (!res.ok) return null;
+  try {
+    const raw = await res.json();
+    const state = raw && typeof raw === "object" ? raw as Partial<PrivateState> : {};
+    return {
+      ...emptyPrivateState(),
+      ...state,
+      historyPersist: state?.historyPersist !== false,
+      history: Array.isArray(state?.history) ? state.history : [],
+      conn: state?.conn ?? null,
+      config: state?.config ?? null,
+      statusEntries: Array.isArray(state?.statusEntries) ? state.statusEntries : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function savePrivateState(state: PrivateState): Promise<boolean> {
+  const res = await fetch("/api/private-state", {
+    method: "PUT",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify(state),
+  });
+  if (res.status === 501) return false;
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j: any = await res.json();
+      if (j?.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return true;
+}
+
 export interface LookupPayload {
   baseUrl: string;
   isFullUrl?: boolean;
@@ -100,6 +159,75 @@ export async function fetchModels(payload: LookupPayload): Promise<ModelsResult>
     throw new Error(msg);
   }
   return res.json();
+}
+
+// 端点延迟测速（不消耗 token，经后端代理）。
+export interface PingPayload {
+  protocol: string;
+  baseUrl: string;
+  isFullUrl?: boolean;
+  apiKey: string;
+  model: string;
+  userAgent?: string;
+}
+
+export async function pingEndpoint(payload: PingPayload, signal?: AbortSignal): Promise<PingResult> {
+  let res: Response;
+  try {
+    res = await fetch("/api/ping", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  } catch (e: any) {
+    return { ok: false, status: 0, latencyMs: 0, kind: "models", error: e?.message ?? String(e) };
+  }
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j: any = await res.json();
+      if (j?.error) msg = j.error;
+    } catch {}
+    return { ok: false, status: res.status, latencyMs: 0, kind: "models", error: msg };
+  }
+  try {
+    return await res.json();
+  } catch (e: any) {
+    return { ok: false, status: res.status, latencyMs: 0, kind: "models", error: `响应解析失败: ${e?.message ?? e}` };
+  }
+}
+
+// 拉取后端持久化的状态列表（加密存储）。204/501 表示未配置 → 返回 null，调用方走内存模式。
+export async function fetchStatus(): Promise<StatusEntry[] | null> {
+  const res = await fetch("/api/status", { headers: authHeaders(), cache: "no-cache" });
+  if (res.status === 204) return null;
+  if (!res.ok) return null;
+  try {
+    const arr = await res.json();
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return null;
+  }
+}
+
+// 写回状态列表。返回 false 表示服务端未配置状态持久化（501）；其他错误抛出。
+export async function saveStatus(entries: StatusEntry[]): Promise<boolean> {
+  const res = await fetch("/api/status", {
+    method: "PUT",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify(entries),
+  });
+  if (res.status === 501) return false;
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j: any = await res.json();
+      if (j?.error) msg = j.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return true;
 }
 
 // 查询供应商余额/额度（经后端代理）。

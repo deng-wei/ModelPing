@@ -76,6 +76,8 @@ A set of default models and curated providers is bundled, maintained with refere
 
 ## Deployment
 
+Docker is the recommended path for a private personal deployment. Cloudflare Workers and Vercel remain supported, but they are optional paths with tighter platform limits.
+
 ### Docker (self-host / cloud server)
 
 The repo ships a GitHub Actions workflow (`.github/workflows/docker-publish.yml`) that builds a multi-arch image and pushes it to GHCR on every push to `main`. Paired with the bundled Watchtower service, the update loop is: **edit code → `git push` → image rebuilt → server auto-pulls and restarts** (no SSH needed).
@@ -87,7 +89,7 @@ One-time setup:
    ```bash
    git clone https://github.com/<owner>/ModelPing.git
    cd ModelPing
-   cp .env.example .env        # set a strong APP_PASSWORD (kept out of git via .gitignore)
+   cp .env.example .env        # set APP_PASSWORD and PRIVATE_STATE_SECRET (kept out of git)
    docker compose up -d        # http://<server>:8787
    ```
 
@@ -98,10 +100,13 @@ To update afterwards, just `git push` to `main` — the Action rebuilds and Watc
 Environment (set in `.env`, or the `environment:` block of `docker-compose.yml`):
 
 - `APP_PASSWORD` (required by compose): access-password gate for `/api`
+- `PRIVATE_STATE_SECRET` (required by compose): long random encryption secret for private working state; keep it separate from `APP_PASSWORD`
 - `ALLOWED_HOSTS`: optional comma-separated target-host allowlist (open-proxy / SSRF protection). Leave unset to allow any custom target host; if you do, block intranet access at the network layer instead (see Security)
 - `CORS_ORIGIN`: comma-separated allowed cross-site origins (same-origin by default; see Security below)
 
 Settings persistence (presets shared across devices) uses the file driver by default. `docker-compose.yml` already points `SETTINGS_FILE` to `/data/presets.json` and mounts a named volume `presets-data`, so it survives container rebuilds. When the volume is empty on first run, `/presets.json` falls back to the defaults bundled in the image.
+
+Private working state (history, the history persistence toggle, last connection, test settings, and Status entries, including API keys) is stored server-side as an encrypted blob when `PRIVATE_STATE_SECRET`, `STATUS_SECRET`, or `APP_PASSWORD` is available. For Docker, set a dedicated `PRIVATE_STATE_SECRET` so changing the access password does not make existing state undecryptable. Old sensitive localStorage keys are migrated once and removed; theme/language and non-sensitive preset cache stay local.
 
 ### Cloudflare Workers (free tier)
 
@@ -117,7 +122,7 @@ Static assets are served via the `[assets]` binding, with SPA routing falling ba
 npx wrangler secret put APP_PASSWORD
 ```
 
-Set `ALLOWED_HOSTS` under `[vars]` in `wrangler.toml`. For cross-device presets persistence, bind a KV namespace: run `wrangler kv namespace create SETTINGS_KV`, then put the returned id into `[[kv_namespaces]]` in `wrangler.toml` (the binding name must be `SETTINGS_KV`; the store enables the cf-kv driver automatically).
+Set `ALLOWED_HOSTS` under `[vars]` in `wrangler.toml`. For cross-device presets and encrypted private-state persistence, bind a KV namespace: run `wrangler kv namespace create SETTINGS_KV`, then put the returned id into `[[kv_namespaces]]` in `wrangler.toml` (the binding name must be `SETTINGS_KV`; without it, server-side persistence is disabled on Workers).
 
 ### Vercel (free tier)
 
@@ -126,13 +131,13 @@ npm i -g vercel
 vercel            # link the project on first run; later use vercel --prod
 ```
 
-Static hosting + a single serverless function (`api/index.ts`, which `vercel.json` routes `/api/*` to). Settings persistence uses Vercel Blob by default: once you add Blob to the project, `BLOB_READ_WRITE_TOKEN` is injected automatically and the store enables the vercel driver; otherwise it runs in frontend-only local mode.
+Static hosting + a single serverless function (`api/index.ts`, which `vercel.json` routes `/api/*` to). Settings/private-state persistence uses Vercel Blob by default: once you add Blob to the project, `BLOB_READ_WRITE_TOKEN` is injected automatically and the store enables the vercel driver; otherwise server-side persistence is disabled and the UI falls back where possible.
 
 > ⚠️ Vercel free-tier serverless functions have an execution limit of ~10s, while this tool defaults to `timeoutMs=60000`. Testing slow models or long streaming responses may be cut off mid-flight by the platform, surfacing as unexpected failures. Use it privately, lower the timeout, or set a higher `maxDuration` in `vercel.json` (requires a suitable plan).
 
 ### Settings persistence (presets shared across devices)
 
-Providers/models edited in the UI's **Settings** are stored in the browser by default. To share them across devices, enable server-side persistence (**no apiKey is ever stored**); the driver is auto-selected by platform:
+Providers/models edited in the UI's **Settings** are stored in the browser by default. To share them across devices, enable server-side presets persistence (**presets never contain apiKey**); the driver is auto-selected by platform:
 
 | Driver   | Trigger                              | Storage location                                              |
 | -------- | ------------------------------------ | ------------------------------------------------------------- |
@@ -153,16 +158,19 @@ Use `STORAGE_DRIVER` to force a driver, and `SETTINGS_FILE` to override the file
 | `CORS_ORIGIN`           | Optional CORS allowed origins (comma-separated, `*` = open to all); no ACAO header if unset (same-origin) |
 | `STORAGE_DRIVER`        | Force a driver: `file` / `cf-kv` / `vercel` / `none`                         |
 | `SETTINGS_FILE`         | Presets path for the file driver; defaults to `./web/public/presets.json`    |
+| `PRIVATE_STATE_SECRET`  | Encryption secret for private working state; optional globally, required by the bundled Docker compose; falls back to `STATUS_SECRET`, then `APP_PASSWORD` |
+| `PRIVATE_STATE_FILE`    | File-driver path for encrypted private working state; defaults to `./data/private-state.enc` |
+| `STATUS_SECRET`         | Optional legacy Status encryption secret; also used as private-state fallback |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob token (injected automatically once Blob is added)                |
 | `PORT`                  | Node server listen port; defaults to 8787                                    |
 
 ## Security (important)
 
-- This tool is a **forwarding proxy**: the frontend sends baseUrl + key to the backend, which forwards to the target API. The backend itself persists no keys.
-- Keys in history live only in **your browser's localStorage** (persistence can be turned off in the panel).
+- This tool is a **forwarding proxy**: the frontend sends baseUrl + key to the backend, which forwards to the target API.
+- Keys in history, last connection, and Status entries are persisted only in the encrypted private-state blob. If private-state persistence is unavailable, they remain in memory for the current browser session and are not written to localStorage; old sensitive localStorage keys are deleted after one migration pass.
 - **CORS is same-origin by default**: when `CORS_ORIGIN` is unset, the backend sends no `Access-Control-Allow-Origin`, so other sites' JS cannot call your `/api`. Configure allowed origins explicitly only when you need cross-site calls.
-- A bare public deployment is effectively an open proxy. **Private use is strongly recommended**, or make sure to enable `APP_PASSWORD` + `ALLOWED_HOSTS`. `APP_PASSWORD` is compared in constant time to reduce password-enumeration risk.
-- For untrusted multi-tenant deployments, set `BLOCK_PRIVATE_HOSTS=1` as an app-level complement to the firewall script (`deploy/firewall-egress.sh`). It rejects literal private/loopback/metadata IPs but cannot stop DNS rebinding — network-layer isolation remains authoritative.
+- A bare public deployment is effectively an open proxy. For personal Docker use, keep a strong `APP_PASSWORD`, expose it only behind HTTPS, and either set `ALLOWED_HOSTS` or run the bundled `deploy/firewall-egress.sh` network-layer egress guard. `APP_PASSWORD` is compared in constant time to reduce password-enumeration risk.
+- If you frequently test local/intranet endpoints, leave `BLOCK_PRIVATE_HOSTS` off and rely on the Docker egress firewall rules for what the public instance may reach. For untrusted multi-tenant deployments, set `BLOCK_PRIVATE_HOSTS=1` as an app-level complement; it rejects literal private/loopback/metadata IPs but cannot stop DNS rebinding.
 - The backend never logs keys or request bodies; keys/tokens/authorization in failure logs are redacted.
 
 ## Project structure
@@ -176,11 +184,12 @@ src/
   models-fetch.ts     Fetch provider model list (picks /models endpoint by baseUrl shape)
   presets-schema.ts   Presets validation (pure function shared by frontend & backend)
   app.ts              Framework-agnostic Hono app (validation / password / CORS / allowlist / routes / persistence)
+  env.ts              Shared runtime env/store injection for Node / Workers / Vercel
   node.ts             Node entry (@hono/node-server + static assets)
   worker.ts           Cloudflare Workers entry (ASSETS binding)
   store/              Persistence drivers: types / file / cf-kv / vercel / index (auto-selected by platform)
 api/
-  index.ts            Vercel serverless entry (hono/vercel)
+  index.ts            Vercel serverless entry
 web/
   index.html  main.tsx  styles.css
   public/presets.json Default providers / models / parameters

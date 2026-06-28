@@ -7,16 +7,18 @@ interface KVNamespace {
   put(key: string, value: string): Promise<void>;
 }
 
-const KEY = "presets";
-
 export class CfKvStore implements SettingsStore {
-  constructor(private readonly kv: KVNamespace) {}
+  // key 默认 "presets"；状态列表用 "status"，与预设分开存。
+  constructor(
+    private readonly kv: KVNamespace,
+    private readonly key: string = "presets",
+  ) {}
 
   get(): Promise<string | null> {
-    return this.kv.get(KEY);
+    return this.kv.get(this.key);
   }
 
   put(value: string): Promise<void> {
-    return this.kv.put(KEY, value);
+    return this.kv.put(this.key, value);
   }
 }

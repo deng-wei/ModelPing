@@ -54,7 +54,8 @@ function parseGeminiModels(json: any): string[] {
 }
 
 // 由连接信息推导拉取计划（端点候选 + 认证 + 解析）。
-function planFor(req: LookupRequest): Plan {
+// 导出供 ping 测速复用（按 host 推导 /models 端点与认证头）。
+export function planFor(req: LookupRequest): Plan {
   const raw = stripHash(req.baseUrl.trim());
   const base = trimSlash(raw);
   const host = (() => {

@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import type { Protocol, StreamVerdict, TestResult } from "../lib/types.js";
+import type { Protocol, StatusEntry, StreamVerdict, TestResult } from "../lib/types.js";
 import { fmtMs, fmtTok, PROTOCOL_LABEL, streamGlyph } from "../lib/format.js";
 import { CcSwitchButton } from "./CcSwitchButton.js";
 import { useI18n, translate, type Lang } from "../lib/i18n.js";
@@ -47,7 +47,8 @@ interface Props {
   rows: ModelRow[];
   busy: boolean;
   progress: { completed: number; total: number };
-  conn: { baseUrl: string; apiKey: string };
+  conn: { providerId: string; baseUrl: string; isFullUrl?: boolean; apiKey: string };
+  userAgent: string;
   providerName: string;
   onToggle: (key: string, checked: boolean) => void;
   onToggleAll: (checked: boolean) => void;
@@ -56,6 +57,7 @@ interface Props {
   onTestSelected: () => void;
   onCancel: () => void;
   onTestAll: () => void;
+  onAddToStatus: (entries: Array<Omit<StatusEntry, "id">>) => void;
   onLaunched: (msg: string) => void;
 }
 
@@ -110,6 +112,7 @@ export function ModelTable(props: Props) {
 
   const allChecked = rows.length > 0 && rows.every((r) => r.checked);
   const someChecked = rows.some((r) => r.checked);
+  const canAddStatus = Boolean(conn.baseUrl.trim() && conn.apiKey.trim());
 
   // 取该行第一个成功协议的输出文本作预览。
   const previewText = (r: ModelRow): string => {
@@ -143,6 +146,25 @@ export function ModelTable(props: Props) {
     setNewModel("");
   };
 
+  const statusDraft = (r: ModelRow): Omit<StatusEntry, "id"> => {
+    const successProtocol = PROTOCOLS.find((p) => r.probes[p].status === "success");
+    const protocol = successProtocol ?? protocolsForModel(r.label)[0];
+    return {
+      providerName,
+      protocol,
+      baseUrl: conn.baseUrl,
+      isFullUrl: Boolean(conn.isFullUrl),
+      apiKey: conn.apiKey,
+      userAgent: props.userAgent || undefined,
+      model: r.modelByProvider[conn.providerId] ?? r.label,
+    };
+  };
+
+  const addRowsToStatus = (items: ModelRow[]) => {
+    if (!canAddStatus || items.length === 0) return;
+    props.onAddToStatus(items.map(statusDraft));
+  };
+
   return (
     <section class="panel">
       <h2>{t("models.title")}</h2>
@@ -154,6 +176,9 @@ export function ModelTable(props: Props) {
         {busy ? <button class="danger" onClick={props.onCancel}>{t("models.cancelTests")}</button> : null}
         <button disabled={busy || rows.length === 0} onClick={() => props.onToggleAll(!allChecked)}>
           {allChecked ? t("common.deselectAll") : t("common.selectAll")}
+        </button>
+        <button disabled={busy || !someChecked || !canAddStatus} onClick={() => addRowsToStatus(rows.filter((r) => r.checked))}>
+          {t("models.addSelectedToStatus")}
         </button>
         <CcSwitchButton
           name={providerName}
@@ -196,6 +221,27 @@ export function ModelTable(props: Props) {
               >
                 <span class="model-card-head">
                   <span class="model-name">{r.label}</span>
+                  <span class="model-card-actions">
+                    <span
+                      class={"model-status-add " + (!canAddStatus ? "disabled" : "")}
+                      role="button"
+                      tabIndex={0}
+                      title={t("models.addToStatus")}
+                      aria-disabled={!canAddStatus}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        addRowsToStatus([r]);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          addRowsToStatus([r]);
+                        }
+                      }}
+                    >
+                      {t("models.addToStatus")}
+                    </span>
                   {r.custom ? (
                     <span
                       class="model-remove"
@@ -217,6 +263,7 @@ export function ModelTable(props: Props) {
                       x
                     </span>
                   ) : null}
+                  </span>
                 </span>
                 <span class="model-card-status">
                   <span class="proto-badges">

@@ -101,3 +101,79 @@ export interface Balance {
 export interface ModelsResult {
   models: string[];
 }
+
+// ---------- 端点延迟测速（ping，不消耗 token） ----------
+// 前端 → 后端：测速所需连接信息 + 协议/模型。优先 GET /models，无该端点时回退最小补全。
+export interface PingRequest {
+  protocol: Protocol;
+  baseUrl: string;
+  isFullUrl?: boolean;
+  apiKey: string;
+  model: string;
+  userAgent?: string;
+}
+
+// 测速结果。kind 标明走的是 models 探测还是补全回退。
+export interface PingResult {
+  ok: boolean;
+  status: number;                  // HTTP 状态码（0=网络层失败）
+  latencyMs: number;
+  kind: "models" | "completion";
+  error: string | null;
+}
+
+// ---------- 状态列表（持久化到后端，加密落盘） ----------
+// 含 apiKey；仅以密文存储（src/crypto.ts），且受 APP_PASSWORD 中间件保护。
+export interface StatusEntry {
+  id: string;
+  providerName: string;
+  protocol: Protocol;
+  baseUrl: string;
+  isFullUrl?: boolean;
+  apiKey: string;
+  userAgent?: string;
+  model: string;
+}
+
+// ---------- 私有工作态（后端加密持久化，跨设备） ----------
+// 含历史、连接、测试参数、状态页条目等敏感数据；仅加密落盘。
+export interface ConnState {
+  providerId: string;
+  baseUrl: string;
+  isFullUrl?: boolean;
+  apiKey: string;
+}
+
+export interface ConfigState {
+  input: string;
+  timeoutMs: number;
+  maxRetries: number;
+  maxTokens: number;
+  userAgent: string;
+  concurrency: number;
+}
+
+export interface HistoryEntry {
+  id: string;
+  ts: number;
+  providerName: string;
+  protocol: Protocol;
+  baseUrl: string;
+  isFullUrl?: boolean;
+  apiKey: string;
+  userAgent?: string;
+  model: string;
+  modelLabel: string;
+  streamVerdict: "stream" | "single" | "none" | null;
+  result: TestResult;
+}
+
+export interface PrivateState {
+  v: 1;
+  historyPersist: boolean;
+  history: HistoryEntry[];
+  conn: ConnState | null;
+  config: Partial<ConfigState> | null;
+  statusEntries: StatusEntry[];
+  updatedAt: number;
+}
