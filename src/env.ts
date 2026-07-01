@@ -14,6 +14,7 @@ export async function buildAppEnv(raw: StoreEnv & Record<string, unknown>): Prom
     BLOCK_PRIVATE_HOSTS: typeof raw.BLOCK_PRIVATE_HOSTS === "string" ? raw.BLOCK_PRIVATE_HOSTS : undefined,
     STATUS_SECRET: typeof raw.STATUS_SECRET === "string" ? raw.STATUS_SECRET : undefined,
     PRIVATE_STATE_SECRET: typeof raw.PRIVATE_STATE_SECRET === "string" ? raw.PRIVATE_STATE_SECRET : undefined,
+    PRIVATE_STATE_SCOPE: typeof raw.PRIVATE_STATE_SCOPE === "string" ? raw.PRIVATE_STATE_SCOPE : undefined,
     store: store ?? undefined,
     privateStore: privateStore ?? undefined,
   };

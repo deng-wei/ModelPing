@@ -79,6 +79,60 @@ describe("private state", () => {
     expect(await get.json()).toMatchObject({ conn: { apiKey: "sk-live" } });
   });
 
+  it("config scope persists private config but strips history", async () => {
+    const app = createApp();
+    const store = new MemoryStore();
+    const env = { APP_PASSWORD: "pw", privateStore: store, PRIVATE_STATE_SCOPE: "config" } satisfies Env;
+    const state = {
+      ...emptyPrivateState(),
+      historyPersist: true,
+      history: [{
+        id: "h1",
+        ts: 1,
+        providerName: "P",
+        protocol: "openai-chat" as const,
+        baseUrl: "https://api.example.com",
+        apiKey: "sk-live",
+        model: "m",
+        modelLabel: "m",
+        streamVerdict: null,
+        result: { ok: true, status: 200, latencyMs: 1, ttftMs: null, usage: {}, text: "ok", error: null, attempts: 1 },
+      }],
+      conn: { providerId: "custom", baseUrl: "https://api.example.com", apiKey: "sk-live" },
+    };
+
+    const put = await app.fetch(req("/api/private-state", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-app-password": "pw" },
+      body: JSON.stringify(state),
+    }), env);
+    expect(put.status).toBe(200);
+
+    const get = await app.fetch(req("/api/private-state", { headers: { "x-app-password": "pw" } }), env);
+    expect(get.status).toBe(200);
+    expect(await get.json()).toMatchObject({
+      historyPersist: false,
+      history: [],
+      conn: { apiKey: "sk-live" },
+    });
+  });
+
+  it("none scope disables private-state persistence", async () => {
+    const app = createApp();
+    const store = new MemoryStore();
+    const env = { APP_PASSWORD: "pw", privateStore: store, PRIVATE_STATE_SCOPE: "none" } satisfies Env;
+
+    const get = await app.fetch(req("/api/private-state", { headers: { "x-app-password": "pw" } }), env);
+    expect(get.status).toBe(204);
+
+    const put = await app.fetch(req("/api/private-state", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-app-password": "pw" },
+      body: JSON.stringify(emptyPrivateState()),
+    }), env);
+    expect(put.status).toBe(501);
+  });
+
   it("returns 409 when encrypted private state cannot be decrypted", async () => {
     const app = createApp();
     const store = new MemoryStore();

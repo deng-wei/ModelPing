@@ -23,6 +23,13 @@ export interface TestResult {
   attempts: number;
 }
 
+export interface DualTestResult {
+  json: TestResult;
+  stream: TestResult;
+  streamVerdict: "stream" | "single" | "none";
+  streamTtftMs: number | null;
+}
+
 export type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "usage"; usage: Usage }

@@ -11,6 +11,7 @@ import type { StoreEnv } from "./store/index.js";
 //   APP_PASSWORD   可选访问口令（建议用 `wrangler secret put APP_PASSWORD` 设置）
 //   ALLOWED_HOSTS  可选目标主机白名单（逗号分隔）
 //   PRIVATE_STATE_SECRET / STATUS_SECRET  可选私有工作态加密密钥
+//   PRIVATE_STATE_SCOPE  可选私有工作态范围：full | config | none
 interface WorkerEnv extends Env {
   ASSETS?: { fetch: (req: Request) => Promise<Response> };
   SETTINGS_KV?: unknown; // KV 命名空间绑定（wrangler.toml 配置）。

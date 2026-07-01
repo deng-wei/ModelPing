@@ -1,12 +1,11 @@
 name: Build and push Docker image
 
-# push 到 main（或打 v* tag）时，自动构建 amd64 镜像并推送到 GHCR。
+# 手动触发或打 v* tag 时，构建 amd64 镜像并推送到 GHCR。
 # 用仓库内置的 GITHUB_TOKEN 登录，无需额外配置 secret。
 # 只构建 amd64：部署盒子为 x86_64，无需 arm64。避免 QEMU 交叉构建下
 # esbuild 安装期自检 (esbuild --version) 触发 ETXTBSY 导致 npm ci 失败。
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch: {}
 

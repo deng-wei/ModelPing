@@ -77,15 +77,15 @@ A set of default models and curated providers is bundled, maintained with refere
 
 ## Deployment
 
-Docker is the recommended path for a private personal deployment. Cloudflare Workers and Vercel remain supported, but they are optional paths with tighter platform limits.
+Cloudflare Workers is the recommended low-cost personal deployment path. The app is built as a Worker API plus Workers Static Assets, so normal page and asset requests are served by Assets while `/api/*` invokes the Worker.
 
 ### Docker (self-host / cloud server)
 
-The repo ships a GitHub Actions workflow (`.github/workflows/docker-publish.yml`) that builds a multi-arch image and pushes it to GHCR on every push to `main`. Paired with the bundled Watchtower service, the update loop is: **edit code → `git push` → image rebuilt → server auto-pulls and restarts** (no SSH needed).
+The repo still ships a GitHub Actions workflow (`.github/workflows/docker-publish.yml`) for fallback self-hosting. It builds and pushes a GHCR image only when manually dispatched or when a `v*` tag is pushed, so day-to-day `main` pushes can be handled by Cloudflare Builds instead.
 
 One-time setup:
 
-1. **Publish the image** — after the first push, the workflow publishes `ghcr.io/<owner>/modelping`. In your repo's *Packages*, set its visibility to **Public** so the server can pull without credentials. (Forking? Change the `image:` in `docker-compose.yml` to your own `ghcr.io/<owner>/modelping`.)
+1. **Publish the image** — run the workflow manually or push a `v*` tag to publish `ghcr.io/<owner>/modelping`. In your repo's *Packages*, set its visibility to **Public** so the server can pull without credentials. (Forking? Change the `image:` in `docker-compose.yml` to your own `ghcr.io/<owner>/modelping`.)
 2. **On the server**:
    ```bash
    git clone https://github.com/<owner>/ModelPing.git
@@ -96,7 +96,7 @@ One-time setup:
 
 `docker-compose.yml` runs two services: `modelping` (the app) and `watchtower` (checks GHCR every 5 min, pulls new images, restarts, prunes old ones). The image bakes in no keys.
 
-To update afterwards, just `git push` to `main` — the Action rebuilds and Watchtower redeploys within its interval. Prefer building on the box instead of GHCR? Replace `image:` with `build: .` and run `docker compose up -d --build`.
+To update afterwards, manually rerun the workflow or push a `v*` tag, then Watchtower redeploys within its interval. Prefer building on the box instead of GHCR? Replace `image:` with `build: .` and run `docker compose up -d --build`.
 
 Environment (set in `.env`, or the `environment:` block of `docker-compose.yml`):
 
@@ -112,18 +112,36 @@ Private working state (history, the history persistence toggle, last connection,
 ### Cloudflare Workers (free tier)
 
 ```bash
-npm run build
 npx wrangler login
+npx wrangler kv namespace create SETTINGS_KV
 npm run deploy:cf
-```
-
-Static assets are served via the `[assets]` binding, with SPA routing falling back to index.html. Set the access password as a secret (do not put it in `wrangler.toml`):
-
-```bash
 npx wrangler secret put APP_PASSWORD
+npx wrangler secret put PRIVATE_STATE_SECRET
 ```
 
-Set `ALLOWED_HOSTS` under `[vars]` in `wrangler.toml`. For cross-device presets and encrypted private-state persistence, bind a KV namespace: run `wrangler kv namespace create SETTINGS_KV`, then put the returned id into `[[kv_namespaces]]` in `wrangler.toml` (the binding name must be `SETTINGS_KV`; without it, server-side persistence is disabled on Workers).
+Put the returned KV id into `wrangler.toml`:
+
+```toml
+[[kv_namespaces]]
+binding = "SETTINGS_KV"
+id = "<your-kv-namespace-id>"
+```
+
+Static assets are served via `[assets]` with SPA fallback. `wrangler.toml` enables `assets_navigation_prefers_asset_serving`, so browser navigation to frontend routes is served by Assets and does not consume Worker requests. Only `/api/*` calls invoke the Worker.
+
+Free-tier defaults are intentionally conservative:
+
+- `PRIVATE_STATE_SCOPE=config`: KV stores presets, last connection, test parameters, and Status entries, but not test history.
+- `BLOCK_PRIVATE_HOSTS=1`: Workers lacks the Docker egress firewall, so public deployments get app-level private-address blocking by default.
+- `APP_PASSWORD` and `PRIVATE_STATE_SECRET` must be Workers secrets, not `wrangler.toml` values.
+
+For GitHub push-to-deploy, connect the repository in Cloudflare Workers Builds:
+
+- Production branch: `main`
+- Build command: `npm run build:cf`
+- Deploy command: `npx wrangler deploy`
+
+Cloudflare free-tier reference limits: Workers Free has 100,000 requests/day, 10 ms CPU/request, and 50 subrequests/request; KV Free has 100,000 reads/day, 1,000 writes/day, 1 write/second to the same key, and 1 GB storage. Workers Static Assets requests are free and unlimited.
 
 ### Vercel (free tier)
 
@@ -160,6 +178,7 @@ Use `STORAGE_DRIVER` to force a driver, and `SETTINGS_FILE` to override the file
 | `STORAGE_DRIVER`        | Force a driver: `file` / `cf-kv` / `vercel` / `none`                         |
 | `SETTINGS_FILE`         | Presets path for the file driver; defaults to `./web/public/presets.json`    |
 | `PRIVATE_STATE_SECRET`  | Encryption secret for private working state; optional globally, required by the bundled Docker compose; falls back to `STATUS_SECRET`, then `APP_PASSWORD` |
+| `PRIVATE_STATE_SCOPE`   | Private-state persistence scope: `full` (default), `config` (conn/config/status only; no history), or `none` |
 | `PRIVATE_STATE_FILE`    | File-driver path for encrypted private working state; defaults to `./data/private-state.enc` |
 | `STATUS_SECRET`         | Optional legacy secret; used only as a private-state fallback                |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob token (injected automatically once Blob is added)                |
@@ -170,7 +189,7 @@ Use `STORAGE_DRIVER` to force a driver, and `SETTINGS_FILE` to override the file
 - This tool is a **forwarding proxy**: the frontend sends baseUrl + key to the backend, which forwards to the target API.
 - Keys in history, last connection, and Status entries are persisted only in the encrypted private-state blob. If private-state persistence is unavailable, they remain in memory for the current browser session and are not written to localStorage; old sensitive localStorage keys are deleted after one migration pass.
 - **CORS is same-origin by default**: when `CORS_ORIGIN` is unset, the backend sends no `Access-Control-Allow-Origin`, so other sites' JS cannot call your `/api`. Configure allowed origins explicitly only when you need cross-site calls.
-- A bare public deployment is effectively an open proxy. For personal Docker use, keep a strong `APP_PASSWORD`, expose it only behind HTTPS, and either set `ALLOWED_HOSTS` or run the bundled `deploy/firewall-egress.sh` network-layer egress guard. `APP_PASSWORD` is compared in constant time to reduce password-enumeration risk.
+- A bare public deployment is effectively an open proxy. Keep a strong `APP_PASSWORD`; for Docker, also expose it only behind HTTPS and either set `ALLOWED_HOSTS` or run the bundled `deploy/firewall-egress.sh` network-layer egress guard. On Cloudflare Workers, leave `BLOCK_PRIVATE_HOSTS=1` enabled unless you explicitly need private-address targets. `APP_PASSWORD` is compared in constant time to reduce password-enumeration risk.
 - When accessed through a non-local address, the UI shows a non-blocking safety warning if the instance appears to be missing an access password or target-host/private-address restrictions.
 - If you frequently test local/intranet endpoints, leave `BLOCK_PRIVATE_HOSTS` off and rely on the Docker egress firewall rules for what the public instance may reach. For untrusted multi-tenant deployments, set `BLOCK_PRIVATE_HOSTS=1` as an app-level complement; it rejects literal private/loopback/metadata IPs but cannot stop DNS rebinding.
 - The backend never logs keys or request bodies; keys/tokens/authorization in failure logs are redacted.
@@ -206,6 +225,7 @@ web/
 | ------------------- | ------------------------------------------------ |
 | `npm run dev`       | Dev (frontend + backend hot reload)              |
 | `npm run build`     | Build frontend (dist/client) + backend (dist/server) |
+| `npm run build:cf`  | Build frontend assets for Cloudflare Workers          |
 | `npm start`         | Run the built Node server                        |
 | `npm run typecheck` | Type checking                                    |
 | `npm run deploy:cf` | Build and deploy to Cloudflare                   |

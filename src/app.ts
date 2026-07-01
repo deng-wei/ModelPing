@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { timingSafeEqual } from "hono/utils/buffer";
-import type { LookupRequest, PingRequest, Protocol, TestRequest } from "./types.js";
+import type { DualTestResult, LookupRequest, PingRequest, Protocol, TestRequest } from "./types.js";
 import { runTest, runTestStream } from "./runner.js";
 import { normalizePresets, FALLBACK_DEFAULTS } from "./presets-schema.js";
 import type { SettingsStore } from "./store/index.js";
@@ -35,6 +35,8 @@ export interface Env {
   STATUS_SECRET?: string;
   // 私有工作态加密密钥源；缺省回退 STATUS_SECRET，再回退 APP_PASSWORD。
   PRIVATE_STATE_SECRET?: string;
+  // 私有工作态持久化范围：full=全部；config=连接/参数/状态页，不保存历史；none=关闭。
+  PRIVATE_STATE_SCOPE?: string;
 }
 
 function privateStateSecret(env?: Env): string | null {
@@ -46,6 +48,84 @@ function privateStateSecret(env?: Env): string | null {
 function blockPrivate(env?: Env): boolean {
   const v = (env?.BLOCK_PRIVATE_HOSTS ?? "").trim().toLowerCase();
   return v === "1" || v === "true" || v === "yes";
+}
+
+function privateStateScope(env?: Env): "full" | "config" | "none" {
+  const v = (env?.PRIVATE_STATE_SCOPE ?? "").trim().toLowerCase();
+  if (v === "none") return "none";
+  if (v === "config") return "config";
+  return "full";
+}
+
+function applyPrivateStateScope(state: ReturnType<typeof normalizePrivateState>, scope: "full" | "config" | "none") {
+  if (scope === "full") return state;
+  return {
+    ...state,
+    historyPersist: false,
+    history: [],
+  };
+}
+
+async function runDualTest(req: TestRequest, signal?: AbortSignal): Promise<DualTestResult> {
+  let gotDelta = false;
+  let streamTtftMs: number | null = null;
+  let streamResult: any = null;
+
+  const streamPromise = (async () => {
+    const stream = runTestStream({ ...req, stream: true }, signal);
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    const handleBlock = (block: string) => {
+      const line = block.split(/\r?\n/).find((l) => l.startsWith("data:"));
+      if (!line) return;
+      let ev: any;
+      try {
+        ev = JSON.parse(line.slice(5).trim());
+      } catch {
+        return;
+      }
+      if (ev.type === "delta") gotDelta = true;
+      else if (ev.type === "ttft") streamTtftMs = ev.ttftMs;
+      else if (ev.type === "done") streamResult = ev.result;
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const blocks = buf.split(/\r?\n\r?\n/);
+      buf = blocks.pop() ?? "";
+      for (const block of blocks) handleBlock(block);
+    }
+    if (buf.trim()) handleBlock(buf);
+
+    return streamResult;
+  })();
+
+  const [json, stream] = await Promise.all([
+    runTest({ ...req, stream: false }, signal),
+    streamPromise,
+  ]);
+  const finalStream = stream ?? {
+    ok: false,
+    status: 0,
+    latencyMs: 0,
+    ttftMs: null,
+    usage: { inputTokens: null, outputTokens: null, totalTokens: null },
+    text: "",
+    error: "流式未返回最终结果",
+    requestUrl: null,
+    attempts: 0,
+  };
+
+  return {
+    json,
+    stream: finalStream,
+    streamVerdict: gotDelta ? "stream" : finalStream.ok ? "single" : "none",
+    streamTtftMs: streamTtftMs ?? finalStream.ttftMs,
+  };
 }
 
 // 把前端传入的部分字段补齐为完整 TestRequest，并做基本校验。
@@ -158,6 +238,8 @@ export function createApp() {
   app.get("/api/health", (c) => {
     const hasAllowedHosts = Boolean((c.env?.ALLOWED_HOSTS ?? "").trim());
     const blockPrivateHosts = blockPrivate(c.env);
+    const scope = privateStateScope(c.env);
+    const privateStateEnabled = Boolean(c.env?.privateStore && privateStateSecret(c.env) && scope !== "none");
     return c.json({
       ok: true,
       needPassword: Boolean(c.env?.APP_PASSWORD),
@@ -166,6 +248,11 @@ export function createApp() {
         hasAllowedHosts,
         blockPrivateHosts,
         shouldWarnOpenProxy: !hasAllowedHosts && !blockPrivateHosts,
+      },
+      persistence: {
+        settings: Boolean(c.env?.store),
+        privateState: privateStateEnabled,
+        privateStateScope: privateStateEnabled ? scope : "none",
       },
     });
   });
@@ -213,11 +300,12 @@ export function createApp() {
 
   // ---------- 私有工作态持久化（含历史/连接/参数/状态，加密落盘） ----------
   app.get("/api/private-state", async (c) => {
+    const scope = privateStateScope(c.env);
     const store = c.env?.privateStore;
     const secret = privateStateSecret(c.env);
-    if (!store || !secret) return c.body(null, 204);
+    if (!store || !secret || scope === "none") return c.body(null, 204);
     const raw = await store.get();
-    if (!raw) return c.json(emptyPrivateState(), 200, { "cache-control": "no-store" });
+    if (!raw) return c.json(applyPrivateStateScope(emptyPrivateState(), scope), 200, { "cache-control": "no-store" });
     let decrypted: string;
     try {
       decrypted = await decrypt(raw, secret);
@@ -225,16 +313,17 @@ export function createApp() {
       return c.json({ error: "私有工作态无法解密，请检查 PRIVATE_STATE_SECRET/STATUS_SECRET/APP_PASSWORD 或清空私有状态文件" }, 409);
     }
     try {
-      return c.json(normalizePrivateState(JSON.parse(decrypted)), 200, { "cache-control": "no-store" });
+      return c.json(applyPrivateStateScope(normalizePrivateState(JSON.parse(decrypted)), scope), 200, { "cache-control": "no-store" });
     } catch {
       return c.json({ error: "私有工作态格式损坏，请清空私有状态文件后重试" }, 409);
     }
   });
 
   app.put("/api/private-state", async (c) => {
+    const scope = privateStateScope(c.env);
     const store = c.env?.privateStore;
     const secret = privateStateSecret(c.env);
-    if (!store || !secret) return c.json({ error: "服务端未配置私有工作态持久化（需 store + PRIVATE_STATE_SECRET/STATUS_SECRET/APP_PASSWORD）" }, 501);
+    if (!store || !secret || scope === "none") return c.json({ error: "服务端未配置私有工作态持久化（需 store + PRIVATE_STATE_SECRET/STATUS_SECRET/APP_PASSWORD）" }, 501);
     let raw: unknown;
     try {
       raw = await c.req.json();
@@ -247,6 +336,7 @@ export function createApp() {
     } catch (e: any) {
       return c.json({ error: e?.message ?? "私有工作态校验失败" }, 400);
     }
+    state = applyPrivateStateScope(state, scope);
     state.updatedAt = Date.now();
     await store.put(await encrypt(JSON.stringify(state), secret));
     return c.json({ ok: true });
@@ -285,6 +375,35 @@ export function createApp() {
     try {
       const result = await runTest(req, c.req.raw.signal);
       return c.json(result);
+    } catch (error) {
+      if (c.req.raw.signal.aborted || (error as { name?: string } | null)?.name === "AbortError") {
+        return new Response(null, { status: 499 });
+      }
+      throw error;
+    }
+  });
+
+  // 合并探测端点：一次 Worker 请求内并行完成非流式与流式探测，降低免费版请求数。
+  app.post("/api/test-dual", async (c) => {
+    let raw: any;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体须为 JSON" }, 400);
+    }
+
+    const { req, error } = normalize(raw);
+    if (error || !req) return c.json({ error: error ?? "参数错误" }, 400);
+
+    if (!hostAllowed(req.baseUrl, c.env?.ALLOWED_HOSTS)) {
+      return c.json({ error: "目标主机不在允许列表内" }, 403);
+    }
+    if (blockPrivate(c.env) && isPrivateUrl(req.baseUrl)) {
+      return c.json({ error: "目标主机为私有/本地地址，已被禁止" }, 403);
+    }
+
+    try {
+      return c.json(await runDualTest(req, c.req.raw.signal));
     } catch (error) {
       if (c.req.raw.signal.aborted || (error as { name?: string } | null)?.name === "AbortError") {
         return new Response(null, { status: 499 });

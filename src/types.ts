@@ -38,6 +38,13 @@ export interface TestResult {
   attempts: number;        // 实际尝试次数
 }
 
+export interface DualTestResult {
+  json: TestResult;
+  stream: TestResult;
+  streamVerdict: "stream" | "single" | "none";
+  streamTtftMs: number | null;
+}
+
 // 流式时后端经 SSE 吐给前端的事件。最终以 done 收尾并携带完整 TestResult。
 export type StreamEvent =
   | { type: "delta"; text: string }

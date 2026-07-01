@@ -25,6 +25,7 @@ const nextKey = () => `r${++rowSeq}`;
 let statusSeq = 0;
 const nextStatusId = () => `s${Date.now()}-${++statusSeq}`;
 const MAX_HISTORY = 200;
+type PrivateStateScope = "full" | "config" | "none";
 
 type StatusDraft = Omit<StatusEntry, "id">;
 
@@ -89,7 +90,9 @@ export function App() {
   const serverPersistRef = useRef<boolean>(false);
   const statusPersistedRef = useRef(true);
   const privatePersistRef = useRef(false);
+  const privateStateScopeRef = useRef<PrivateStateScope>("none");
   const privateSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPrivateSaveRef = useRef<string>("");
   const privateStateRef = useRef<PrivateState>(emptyPrivateState());
   // ConfigPanel 参数 → defaults 同步到后端的防抖句柄。
   const configSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -119,7 +122,12 @@ export function App() {
     if (!privatePersistRef.current) return;
     if (privateSaveRef.current) clearTimeout(privateSaveRef.current);
     privateSaveRef.current = setTimeout(() => {
-      const state = privateStateRef.current;
+      const scope = privateStateScopeRef.current;
+      const state = scope === "config"
+        ? { ...privateStateRef.current, historyPersist: false, history: [], updatedAt: privateStateRef.current.updatedAt }
+        : privateStateRef.current;
+      const serialized = JSON.stringify(state);
+      if (serialized === lastPrivateSaveRef.current) return;
       savePrivateState(state)
         .then((ok) => {
           if (!ok) {
@@ -127,10 +135,12 @@ export function App() {
             statusPersistedRef.current = false;
             setStatusPersisted(false);
             showToast(t("app.privateStateUnavailable"));
+          } else {
+            lastPrivateSaveRef.current = serialized;
           }
         })
         .catch((e) => showToast(t("app.privateStateSaveFailed", { msg: e?.message ?? e })));
-    }, 800);
+    }, 2000);
   };
 
   const persistPrivateState = (patch: Partial<PrivateState>) => {
@@ -159,7 +169,7 @@ export function App() {
       setHistory((prev) => {
         const next = [entry, ...prev].slice(0, MAX_HISTORY);
         historyRef.current = next;
-        if (privateStateRef.current.historyPersist) persistPrivateState({ history: next });
+        if (privateStateRef.current.historyPersist && privateStateScopeRef.current === "full") persistPrivateState({ history: next });
         return next;
       });
     },
@@ -178,6 +188,8 @@ export function App() {
     try {
       const health = await fetchHealth();
       const security = health.security;
+      const scope = health.persistence?.privateState ? health.persistence.privateStateScope : "none";
+      privateStateScopeRef.current = scope;
       setSecurityWarn(Boolean(security && !isLocalOrigin() && (!security.hasPassword || security.shouldWarnOpenProxy)));
       if (health.needPassword) {
         setNeedPassword(true);
@@ -199,15 +211,19 @@ export function App() {
       statusPersistedRef.current = privateCanPersist;
       setStatusPersisted(privateCanPersist);
       const legacy = migrateLegacyPrivateState();
+      const historyCanPersist = scope === "full";
       const mergedPrivateState: PrivateState = {
         ...(privateState ?? emptyPrivateState()),
-        historyPersist: privateState?.historyPersist ?? legacy.historyPersist ?? true,
-        history: privateState?.history?.length ? privateState.history : (legacy.history ?? []),
+        historyPersist: historyCanPersist ? (privateState?.historyPersist ?? legacy.historyPersist ?? true) : false,
+        history: historyCanPersist
+          ? (privateState?.history?.length ? privateState.history : (legacy.history ?? []))
+          : [],
         conn: privateState?.conn ?? legacy.conn ?? null,
         config: privateState?.config ?? legacy.config ?? null,
         statusEntries: privateState?.statusEntries ?? [],
       };
       privateStateRef.current = mergedPrivateState;
+      lastPrivateSaveRef.current = JSON.stringify(scope === "config" ? { ...mergedPrivateState, historyPersist: false, history: [] } : mergedPrivateState);
       if (privateCanPersist && (legacy.historyPersist !== undefined || legacy.history || legacy.conn || legacy.config)) {
         syncPrivateRef(mergedPrivateState);
         schedulePrivateSave();
@@ -350,6 +366,11 @@ export function App() {
   };
 
   const onTogglePersist = (on: boolean) => {
+    if (privateStateScopeRef.current !== "full") {
+      setPersistState(false);
+      showToast(t("app.privateStateUnavailable"));
+      return;
+    }
     setPersistState(on);
     if (!on) {
       setHistory([]);

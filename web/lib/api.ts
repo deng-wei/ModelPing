@@ -1,4 +1,4 @@
-import type { Balance, ModelsResult, PingResult, PresetsResponse, PrivateState, StreamEvent, TestResult, Usage } from "./types.js";
+import type { Balance, DualTestResult, ModelsResult, PingResult, PresetsResponse, PrivateState, StreamEvent, TestResult, Usage } from "./types.js";
 import { normalizePresets } from "./presets.js";
 import { drainSseBlocks, extractSseData } from "../../src/sse.js";
 
@@ -39,6 +39,11 @@ export interface HealthResponse {
     hasAllowedHosts: boolean;
     blockPrivateHosts: boolean;
     shouldWarnOpenProxy: boolean;
+  };
+  persistence?: {
+    settings: boolean;
+    privateState: boolean;
+    privateStateScope: "full" | "config" | "none";
   };
 }
 
@@ -266,6 +271,50 @@ export async function runTestJson(payload: TestPayload, signal?: AbortSignal): P
       usage: EMPTY_USAGE,
       text: "", error: `响应解析失败: ${e?.message ?? e}`, requestUrl: null, attempts: 0,
     };
+  }
+}
+
+export async function runTestDual(payload: TestPayload, signal?: AbortSignal): Promise<DualTestResult> {
+  let res: Response;
+  try {
+    res = await fetch("/api/test-dual", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  } catch (e: any) {
+    const failed: TestResult = {
+      ok: false, status: 0, latencyMs: 0, ttftMs: null,
+      usage: EMPTY_USAGE,
+      text: "", error: e?.message ?? String(e), requestUrl: null, attempts: 0,
+    };
+    return { json: failed, stream: failed, streamVerdict: "none", streamTtftMs: null };
+  }
+
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j: any = await res.json();
+      if (j?.error) msg = j.error;
+    } catch {}
+    const failed: TestResult = {
+      ok: false, status: res.status, latencyMs: 0, ttftMs: null,
+      usage: EMPTY_USAGE,
+      text: "", error: msg, requestUrl: null, attempts: 0,
+    };
+    return { json: failed, stream: failed, streamVerdict: "none", streamTtftMs: null };
+  }
+
+  try {
+    return await res.json();
+  } catch (e: any) {
+    const failed: TestResult = {
+      ok: false, status: res.status, latencyMs: 0, ttftMs: null,
+      usage: EMPTY_USAGE,
+      text: "", error: `响应解析失败: ${e?.message ?? e}`, requestUrl: null, attempts: 0,
+    };
+    return { json: failed, stream: failed, streamVerdict: "none", streamTtftMs: null };
   }
 }
 

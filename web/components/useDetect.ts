@@ -1,7 +1,7 @@
 import { useRef, useState } from "preact/hooks";
 import type { Dispatch, StateUpdater } from "preact/hooks";
 import type { HistoryEntry, Protocol, TestResult } from "../lib/types.js";
-import { EMPTY_USAGE, runTestJson, runTestStream, type TestPayload } from "../lib/api.js";
+import { EMPTY_USAGE, runTestDual, type TestPayload } from "../lib/api.js";
 import { CUSTOM_PROVIDER_ID } from "../lib/presets.js";
 import { PROTOCOLS, protocolsForModel, type ModelRow, type ProtocolProbe } from "./ModelTable.js";
 import type { ConnValue } from "./ConnectionPanel.js";
@@ -92,26 +92,11 @@ export function useDetect(deps: DetectDeps) {
       };
 
       try {
-        // 非流式与流式独立并行探测：流式不再依赖非流式先通过，
-        // 这样只支持流式的端点也能被正确识别。
-        const streamProbe = (async () => {
-          let gotDelta = false;
-          let ttft: number | null = null;
-          const sres = await runTestStream({ ...payload, stream: true }, (ev) => {
-            if (ev.type === "delta") gotDelta = true;
-            else if (ev.type === "ttft") ttft = ev.ttftMs;
-          }, signal);
-          // 判定收紧：仅当收到 ≥1 个 delta 才算真流式；
-          // stream:true 却一次性返回（无增量）判为 single，避免假阳性。
-          const verdict: StreamVerdict = gotDelta ? "stream" : sres.ok ? "single" : "none";
-          return { verdict, ttftMs: ttft ?? sres.ttftMs, sres };
-        })();
-
-        const [jsonResult, streamResult] = await Promise.all([
-          runTestJson(payload, signal),
-          streamProbe,
-        ]);
-        const { verdict: streamVerdict, ttftMs: streamTtftMs, sres } = streamResult;
+        const dual = await runTestDual(payload, signal);
+        const jsonResult = dual.json;
+        const streamVerdict: StreamVerdict = dual.streamVerdict;
+        const streamTtftMs = dual.streamTtftMs;
+        const sres = dual.stream;
 
         // 展示结果：优先非流式；非流式失败但流式成功时回退到流式结果。
         const result = jsonResult.ok ? jsonResult : sres.ok ? sres : jsonResult;

@@ -31,6 +31,32 @@ describe("runtime env injection", () => {
         blockPrivateHosts: false,
         shouldWarnOpenProxy: false,
       },
+      persistence: {
+        settings: false,
+        privateState: false,
+        privateStateScope: "none",
+      },
+    });
+  });
+
+  it("exposes config-scope private persistence in health", async () => {
+    const app = createApp();
+    const env = await buildAppEnv({
+      APP_PASSWORD: "pw",
+      STORAGE_DRIVER: "file",
+      SETTINGS_FILE: "/tmp/modelping-env-test-presets.json",
+      PRIVATE_STATE_FILE: "/tmp/modelping-env-test-private.enc",
+      PRIVATE_STATE_SCOPE: "config",
+    });
+
+    const res = await app.fetch(new Request("http://x.test/api/health"), env);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      persistence: {
+        settings: true,
+        privateState: true,
+        privateStateScope: "config",
+      },
     });
   });
 });
